@@ -143,7 +143,9 @@ def download_photo(photo, file_size, destination_path):
     return download_photo_from_server(photo, file_size, destination_path)
 
 
-def process_photo(photo, file_size, destination_path, files, folder_format, hardlink_registry=None):
+def process_photo(
+    photo, file_size, destination_path, files, folder_format, hardlink_registry=None
+):
     """Process photo details (legacy function for backward compatibility).
 
     Args:
@@ -197,7 +199,9 @@ def process_photo(photo, file_size, destination_path, files, folder_format, hard
     return result
 
 
-def collect_photo_for_download(photo, file_size, destination_path, files, folder_format, hardlink_registry=None):
+def collect_photo_for_download(
+    photo, file_size, destination_path, files, folder_format, hardlink_registry=None
+):
     """Collect photo info for parallel download without immediately downloading.
 
     Legacy function - now delegates to photo_download_manager.
@@ -277,7 +281,9 @@ def download_photo_task(download_info):
                 return True
             else:
                 # Fallback to download if hard link creation fails
-                LOGGER.warning(f"Hard link creation failed, downloading {photo_path} instead")
+                LOGGER.warning(
+                    f"Hard link creation failed, downloading {photo_path} instead"
+                )
 
         # Download the photo - this maintains the original function call for test compatibility
         result = download_photo(photo, file_size, photo_path)
@@ -386,11 +392,19 @@ def sync_photos(config, photos):
     # Parse configuration using centralized config parser
     destination_path = config_parser.prepare_photos_destination(config=config)
     library_destinations = config_parser.get_photos_library_destinations(config=config)
+    # Apply the requested filename convention for this sync run. The module-level
+    # default in photo_path_utils flows down through generate_photo_path -> all
+    # downloads without requiring a per-call signature change.
+    from src.photo_path_utils import set_default_filename_format
+
+    set_default_filename_format(config_parser.get_photos_filename_format(config=config))
     filters = config_parser.get_photos_filters(config=config)
     files = set()
     download_all = config_parser.get_photos_all_albums(config=config)
     use_hardlinks = config_parser.get_photos_use_hardlinks(config=config)
-    libraries = filters["libraries"] if filters["libraries"] is not None else photos.libraries
+    libraries = (
+        filters["libraries"] if filters["libraries"] is not None else photos.libraries
+    )
     folder_format = config_parser.get_photos_folder_format(config=config)
 
     # Initialize hard link registry using new modular approach
@@ -436,7 +450,9 @@ def sync_photos(config, photos):
     if config_parser.get_photos_remove_obsolete(config=config):
         if library_destinations:
             for library in libraries:
-                lib_dest = _library_destination(destination_path, library, library_destinations)
+                lib_dest = _library_destination(
+                    destination_path, library, library_destinations
+                )
                 remove_obsolete_files(lib_dest, files)
         else:
             remove_obsolete_files(destination_path, files)
@@ -444,7 +460,9 @@ def sync_photos(config, photos):
     return total_successful, total_failed
 
 
-def _library_destination(base_destination: str, library: str, library_destinations: dict) -> str:
+def _library_destination(
+    base_destination: str, library: str, library_destinations: dict
+) -> str:
     """Resolve the on-disk destination for a given iCloud photo library.
 
     When ``library_destinations`` provides a mapping for ``library``, joins
@@ -487,9 +505,14 @@ def _sync_all_photos_first_for_hardlinks(
         Tuple of (total_successful, total_failed) download counts
     """
     for library in libraries:
-        if library == "PrimarySync" and "All Photos" in photos.libraries[library].albums:
+        if (
+            library == "PrimarySync"
+            and "All Photos" in photos.libraries[library].albums
+        ):
             LOGGER.info("Syncing 'All Photos' album first for hard link reference...")
-            lib_dest = _library_destination(destination_path, library, library_destinations or {})
+            lib_dest = _library_destination(
+                destination_path, library, library_destinations or {}
+            )
             result = sync_album_photos(
                 album=photos.libraries[library].albums["All Photos"],
                 destination_path=os.path.join(lib_dest, "All Photos"),
@@ -541,7 +564,9 @@ def _sync_albums_by_configuration(
     """
     total_successful, total_failed = 0, 0
     for library in libraries:
-        lib_dest = _library_destination(destination_path, library, library_destinations or {})
+        lib_dest = _library_destination(
+            destination_path, library, library_destinations or {}
+        )
         if download_all and library == "PrimarySync":
             sub_successful, sub_failed = _sync_all_albums_except_filtered(
                 photos,
@@ -727,7 +752,9 @@ def _sync_filtered_albums_in_library(
                 total_successful += sub_successful
                 total_failed += sub_failed
         else:
-            LOGGER.warning(f"Album {album} not found in {library}. Skipping the album {album} ...")
+            LOGGER.warning(
+                f"Album {album} not found in {library}. Skipping the album {album} ..."
+            )
     return total_successful, total_failed
 
 
