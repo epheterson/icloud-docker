@@ -137,6 +137,30 @@ def _collect_photo_download_tasks(
             )
             if download_info:
                 tasks.append(download_info)
+
+        # Live Photo .mov pair — auto-included when the user asked for
+        # the "original" still and the asset is actually a Live Photo
+        # (icloudpy exposes the paired .mov under the "live_video_original"
+        # version key). Mirrors how Apple's Photos.app pairs the two files.
+        # Requires icloudpy with the Live Photo patch (PHOTO_VERSION_LOOKUP
+        # contains "live_video_*") — falls through gracefully on older
+        # icloudpy versions where the key is absent from photo.versions.
+        if "original" in file_sizes:
+            try:
+                live_versions = getattr(photo, "versions", {})
+            except Exception:  # icloudpy can raise on partial CloudKit records
+                live_versions = {}
+            if "live_video_original" in live_versions:
+                live_task = collect_download_task(
+                    photo,
+                    "live_video_original",
+                    destination_path,
+                    files,
+                    folder_format,
+                    hardlink_registry,
+                )
+                if live_task:
+                    tasks.append(live_task)
         return tasks
     except Exception as e:
         try:
