@@ -107,3 +107,73 @@ class TestSetDefaultFilenameFormat(unittest.TestCase):
 
         # Stays at simple — invalid value silently rejected
         assert photo_path_utils._DEFAULT_FILENAME_FORMAT == "simple"
+
+
+
+class TestFilenameFormatEndToEnd(unittest.TestCase):
+    """Regression test for CRITICAL-2 from the 2026-05-27 pre-submission review.
+
+    The module-level default set by ``set_default_filename_format`` must
+    propagate all the way through to the path that ``collect_download_task``
+    generates. Previously, ``generate_photo_path`` had a ``filename_format``
+    parameter defaulting to ``"metadata"`` that silently overrode the module
+    default — so ``filename_format: simple`` in config had zero effect at the
+    download path level. This test exercises the full path.
+    """
+
+    def setUp(self):
+        set_default_filename_format("metadata")
+
+    def tearDown(self):
+        set_default_filename_format("metadata")
+
+    def test_generate_photo_path_uses_module_default(self):
+        """When `set_default_filename_format("simple")` has been called,
+        ``generate_photo_path`` (the public-ish function called by
+        collect_download_task) must produce a plain filename — not the
+        metadata-suffix form."""
+        from src.photo_download_manager import generate_photo_path
+
+        photo = _fake_photo("IMG_9999.HEIC", "cloudkit-id-xyz")
+        # icloudpy's PhotoAsset.versions exposes `size` per version — fake one
+        photo.versions = {"original": {"type": "public.heic", "size": 12345}}
+        photo.created = MagicMock()
+        # asset_date attribute not used when folder_format is None
+
+        set_default_filename_format("simple")
+        path = generate_photo_path(
+            photo,
+            file_size="original",
+            destination_path="/tmp/dest",
+            folder_format=None,
+        )
+        # With simple format, path basename is plain `IMG_9999.HEIC`
+        # (NOT IMG_9999__original__<base64id>.HEIC)
+        import os
+        basename = os.path.basename(path)
+        assert basename == "IMG_9999.HEIC", (
+            f"Expected plain `IMG_9999.HEIC` (simple format), got `{basename}`. "
+            "This means filename_format: simple is not threading through to "
+            "the download path — the boredazfcuk migration would re-download."
+        )
+
+    def test_generate_photo_path_metadata_format_still_works(self):
+        """Backward compat: when default stays `metadata`, format is unchanged."""
+        from src.photo_download_manager import generate_photo_path
+
+        photo = _fake_photo("IMG_8888.HEIC", "id-abc")
+        photo.versions = {"original": {"type": "public.heic", "size": 12345}}
+        photo.created = MagicMock()
+
+        # Default is "metadata"; no set call
+        path = generate_photo_path(
+            photo,
+            file_size="original",
+            destination_path="/tmp/dest",
+            folder_format=None,
+        )
+        import os
+        basename = os.path.basename(path)
+        # metadata format: IMG_8888__original__<base64id>.HEIC
+        assert basename.startswith("IMG_8888__original__")
+        assert basename.endswith(".HEIC")

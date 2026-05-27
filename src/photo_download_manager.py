@@ -61,26 +61,29 @@ def get_max_threads_for_download(config) -> int:
 
 
 def generate_photo_path(photo, file_size: str, destination_path: str,
-                       folder_format: str | None,
-                       filename_format: str = "metadata") -> str:
+                       folder_format: str | None) -> str:
     """Generate full file path for photo with legacy file renaming.
 
     This function combines path generation, folder creation, and legacy
     file renaming into a single operation to maintain backward compatibility.
+
+    Filename convention (``metadata`` vs ``simple``) is taken from the
+    module-level default set by ``sync_photos`` via
+    ``photo_path_utils.set_default_filename_format`` at the start of each
+    sync run — so no per-call argument is needed.
 
     Args:
         photo: Photo object from iCloudPy
         file_size: File size variant (original, medium, thumb, etc.)
         destination_path: Base destination path
         folder_format: strftime format string for folder creation
-        filename_format: ``"metadata"`` (default) or ``"simple"`` — see
-            ``generate_photo_filename_with_metadata`` for details.
 
     Returns:
         Normalized full path where photo should be saved
     """
-    # Generate filename in the requested convention
-    filename_with_metadata = generate_photo_filename_with_metadata(photo, file_size, filename_format)
+    # Filename convention picked up from the module-level default; passing
+    # None makes generate_photo_filename_with_metadata read it.
+    filename_with_metadata = generate_photo_filename_with_metadata(photo, file_size)
 
     # Create folder path if needed
     final_destination = create_folder_path_if_needed(destination_path, folder_format, photo)
