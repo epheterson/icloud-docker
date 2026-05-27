@@ -61,7 +61,8 @@ def get_max_threads_for_download(config) -> int:
 
 
 def generate_photo_path(photo, file_size: str, destination_path: str,
-                       folder_format: str | None) -> str:
+                       folder_format: str | None,
+                       filename_format: str = "metadata") -> str:
     """Generate full file path for photo with legacy file renaming.
 
     This function combines path generation, folder creation, and legacy
@@ -72,12 +73,14 @@ def generate_photo_path(photo, file_size: str, destination_path: str,
         file_size: File size variant (original, medium, thumb, etc.)
         destination_path: Base destination path
         folder_format: strftime format string for folder creation
+        filename_format: ``"metadata"`` (default) or ``"simple"`` — see
+            ``generate_photo_filename_with_metadata`` for details.
 
     Returns:
         Normalized full path where photo should be saved
     """
-    # Generate filename with metadata
-    filename_with_metadata = generate_photo_filename_with_metadata(photo, file_size)
+    # Generate filename in the requested convention
+    filename_with_metadata = generate_photo_filename_with_metadata(photo, file_size, filename_format)
 
     # Create folder path if needed
     final_destination = create_folder_path_if_needed(destination_path, folder_format, photo)

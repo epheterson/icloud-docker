@@ -599,6 +599,40 @@ def validate_file_sizes(file_sizes: list[str]) -> list[str]:
     return validated_sizes if validated_sizes else ["original"]
 
 
+def get_photos_filename_format(config: dict) -> str:
+    """Filename naming convention for downloaded photos.
+
+    - ``"metadata"`` (default, backward-compatible): ``name__filesize__base64id.ext``
+      — mandarons' historical format. Encodes the CloudKit asset ID into the
+      filename so the same source photo can be unambiguously round-tripped to
+      its iCloud record from the local file alone.
+    - ``"simple"``: ``name.ext`` — the boredazfcuk/docker-icloudpd convention
+      (and Apple's own download-from-icloud.com convention). Drops the
+      metadata suffix entirely. Trade-off: rename collisions are possible
+      (two distinct iCloud photos sharing the same human filename land on
+      the same path on disk; second download will overwrite the first).
+      Mostly useful for users migrating from boredazfcuk who want to point
+      mandarons at their existing photo tree without triggering a full
+      re-download — because ``check_photo_exists`` compares by file size,
+      not by filename suffix, matching simple-format files are correctly
+      treated as already-present.
+
+    Returns:
+        Either ``"metadata"`` (default) or ``"simple"``.
+    """
+    config_path = ["photos", "filename_format"]
+    value = get_config_value_or_none(config=config, config_path=config_path)
+    if value is None:
+        return "metadata"
+    value = str(value).lower().strip()
+    if value not in ("metadata", "simple"):
+        log_config_not_found_warning(
+            config_path, f"unknown value {value!r}; falling back to 'metadata'"
+        )
+        return "metadata"
+    return value
+
+
 def get_photos_library_destinations(config: dict) -> dict[str, str]:
     """Get per-library destination subdirectory mapping from photos config.
 
