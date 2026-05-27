@@ -636,28 +636,7 @@ def validate_file_sizes(file_sizes: list[str]) -> list[str]:
 
 
 def get_photos_library_destinations(config: dict) -> dict[str, str]:
-    """Get per-library destination subdirectory mapping from photos config.
-
-    Optional config block (under top-level ``photos``):
-
-    .. code-block:: yaml
-
-        photos:
-          destination: photos
-          library_destinations:
-            PrimarySync: personal
-            SharedLibrary: shared
-
-    When set, photos from each library are written to
-    ``<photos.destination>/<library_destinations[library]>/...`` instead of
-    sharing one destination tree. When unset (the default), all libraries
-    share the single ``photos.destination`` path — preserving the historical
-    behaviour of mandarons/icloud-docker.
-
-    Returns:
-        Dict mapping library name → subdirectory relative to ``photos.destination``.
-        Returns ``{}`` if not configured (backward-compatible default).
-    """
+    """Per-library destination subdirectory mapping. See full docstring above."""
     config_path = ["photos", "library_destinations"]
     mapping = get_config_value_or_none(config=config, config_path=config_path)
     if not mapping or not isinstance(mapping, dict):
@@ -666,17 +645,7 @@ def get_photos_library_destinations(config: dict) -> dict[str, str]:
 
 
 def get_photos_filename_format(config: dict) -> str:
-    """Filename naming convention for downloaded photos.
-
-    - ``"metadata"`` (default, backward-compatible): ``name__filesize__base64id.ext``
-    - ``"simple"``: ``name.ext`` — boredazfcuk/Apple convention. Lets users
-      migrate from boredazfcuk-format trees without re-downloading.
-      ``collect_download_task`` detects collisions and falls back to the
-      metadata-suffix path for the colliding photo so both files coexist.
-
-    Returns:
-        Either ``"metadata"`` (default) or ``"simple"``.
-    """
+    """Filename convention: 'metadata' (default) or 'simple' (boredazfcuk-compat)."""
     config_path = ["photos", "filename_format"]
     value = get_config_value_or_none(config=config, config_path=config_path)
     if value is None:
@@ -688,6 +657,13 @@ def get_photos_filename_format(config: dict) -> str:
         )
         return "metadata"
     return value
+
+
+def get_photos_preserve_originals_as_bak(config: dict) -> bool:
+    """Hide untouched-original copies of edited photos via .original.bak suffix."""
+    config_path = ["photos", "preserve_originals_as_bak"]
+    value = get_config_value_or_none(config=config, config_path=config_path)
+    return bool(value) if value is not None else False
 
 
 def get_photos_libraries_filter(

@@ -47,7 +47,9 @@ def get_photo_name_and_extension(photo, file_size: str) -> tuple[str, str]:
         if filetype in _get_original_alt_filetype_mapping():
             extension = _get_original_alt_filetype_mapping()[filetype]
         else:
-            LOGGER.warning(f"Unknown filetype {filetype} for original_alt version of {filename}")
+            LOGGER.warning(
+                f"Unknown filetype {filetype} for original_alt version of {filename}"
+            )
 
     return name, extension
 
@@ -66,18 +68,43 @@ def set_default_filename_format(filename_format: str) -> None:
         _DEFAULT_FILENAME_FORMAT = filename_format
 
 
-def generate_photo_filename_with_metadata(photo, file_size: str, filename_format: str | None = None) -> str:
+# Module-level toggle for hiding untouched originals of edited photos via
+# the ``.original.bak`` suffix convention. ``sync_photos`` sets this once
+# per sync run from ``photos.preserve_originals_as_bak``.
+_PRESERVE_ORIGINALS_AS_BAK = False
+
+
+def set_preserve_originals_as_bak(value: bool) -> None:
+    """Set the module-level toggle for hiding untouched originals via .original.bak."""
+    global _PRESERVE_ORIGINALS_AS_BAK
+    _PRESERVE_ORIGINALS_AS_BAK = bool(value)
+
+
+def _photo_has_alt_version(photo) -> bool:
+    """Check whether the asset has an edited (``original_alt``) version on iCloud.
+
+    Soft check — exceptions reading ``photo.versions`` are treated as "no alt"
+    so a partial CloudKit record cannot break the filename pipeline.
+    """
+    try:
+        return "original_alt" in photo.versions
+    except Exception:
+        return False
+
+
+def generate_photo_filename_with_metadata(
+    photo, file_size: str, filename_format: str | None = None
+) -> str:
     """Generate filename for a photo asset.
 
-    Two conventions supported (controlled by ``filename_format`` or the
-    module-level default set by ``set_default_filename_format``):
+    Two conventions (controlled by ``filename_format`` or module default):
+    - ``"metadata"`` (default): ``name__filesize__base64id.extension``
+    - ``"simple"``: ``name.extension``
 
-    - ``"metadata"`` (default): ``name__filesize__base64id.extension`` —
-      mandarons' historical format, encodes CloudKit asset id into the filename.
-    - ``"simple"``: ``name.extension`` — boredazfcuk/Apple convention. Lets
-      users migrate from boredazfcuk-format trees without re-downloading.
-      ``collect_download_task`` detects collisions and falls back to the
-      metadata-suffix path for the colliding photo so both files coexist.
+    When ``_PRESERVE_ORIGINALS_AS_BAK`` is on AND this is the ``original``
+    size AND the asset has an ``original_alt`` version on iCloud (edited),
+    the filename ends with ``.original.bak`` so photo browsers skip it but
+    the file remains filesystem-recoverable.
 
     Args:
         photo: Photo object from iCloudPy
@@ -86,7 +113,7 @@ def generate_photo_filename_with_metadata(photo, file_size: str, filename_format
             use the module-level default.
 
     Returns:
-        Filename string in the chosen format.
+        Filename string in the chosen format, possibly with .original.bak suffix.
     """
     if filename_format is None:
         filename_format = _DEFAULT_FILENAME_FORMAT
@@ -97,12 +124,24 @@ def generate_photo_filename_with_metadata(photo, file_size: str, filename_format
 
     photo_id_encoded = base64.urlsafe_b64encode(photo.id.encode()).decode()
     if extension == "":
-        return f"{'__'.join([name, file_size, photo_id_encoded])}"
+        result = f"{'__'.join([name, file_size, photo_id_encoded])}"
     else:
-        return f"{'__'.join([name, file_size, photo_id_encoded])}.{extension}"
+        result = f"{'__'.join([name, file_size, photo_id_encoded])}.{extension}"
+
+    # Apply .original.bak hide-suffix when applicable
+    if (
+        _PRESERVE_ORIGINALS_AS_BAK
+        and file_size == "original"
+        and _photo_has_alt_version(photo)
+    ):
+        result = f"{result}.original.bak"
+
+    return result
 
 
-def create_folder_path_if_needed(destination_path: str, folder_format: str | None, photo) -> str:
+def create_folder_path_if_needed(
+    destination_path: str, folder_format: str | None, photo
+) -> str:
     """Create folder path based on folder format and photo creation date.
 
     Args:
