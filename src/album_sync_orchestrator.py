@@ -146,8 +146,12 @@ def _collect_photo_download_tasks(
         # contains "live_video_*") — falls through gracefully on older
         # icloudpy versions where the key is absent from photo.versions.
         if "original" in file_sizes:
+            # photo.versions can raise on partial CloudKit records — swallow
+            # so the still tasks still emit. ``getattr`` default doesn't help
+            # against a property that raises, so an explicit try/except is
+            # required.
             try:
-                live_versions = getattr(photo, "versions", {})
+                live_versions = photo.versions
             except Exception:
                 live_versions = {}
             if "live_video_original" in live_versions:
