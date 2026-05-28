@@ -2,3 +2,4 @@ icloudpy @ git+https://github.com/epheterson/icloudpy.git@combined/all-fixes
 ruamel.yaml==0.19.1
 python-magic==0.4.27
 requests~=2.32.3
+flask==3.0.3
