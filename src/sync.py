@@ -154,6 +154,45 @@ def _authenticate_and_get_api(config, username: str):
     return get_api_instance(username=username, password=password, server_region=server_region)
 
 
+def _check_mount_marker(destination_path: str, marker_filename: str, required: bool, service_name: str) -> bool:
+    """Verify the failsafe marker file is present in a destination directory.
+
+    Mirrors boredazfcuk/docker-icloudpd's ``.mounted`` pattern: protects
+    against silent bind-mount failures (typo in the host path, missing
+    share, wrong permissions) that would otherwise dump iCloud data into
+    an empty container-internal directory.
+
+    Returns True when it is safe to proceed (marker not required, or marker
+    required and present). Returns False when the marker is required but
+    absent — in which case the caller should skip this sync cycle without
+    advancing the countdown so the next interval re-checks.
+
+    Args:
+        destination_path: Sync destination directory.
+        marker_filename: Filename to look for inside ``destination_path``
+            (e.g. ``.mounted``).
+        required: Whether the marker is required at all. When False this
+            is a no-op that always returns True.
+        service_name: Human-readable label used in the error log
+            (``Drive`` / ``Photos``).
+
+    Returns:
+        True if it is safe to proceed; False to skip this sync cycle.
+    """
+    if not required:
+        return True
+    marker_path = os.path.join(destination_path, marker_filename)
+    if os.path.isfile(marker_path):
+        return True
+    LOGGER.error(
+        f"{service_name} mount marker missing: {marker_path} not found — "
+        f"refusing to sync. Create the marker file (`touch {marker_path}`) "
+        f"after confirming the destination is correctly mounted, then the "
+        f"next sync cycle will proceed.",
+    )
+    return False
+
+
 def _perform_drive_sync(config, api, sync_state: SyncState, drive_sync_interval: int):
     """
     Execute drive synchronization if enabled.
@@ -176,6 +215,17 @@ def _perform_drive_sync(config, api, sync_state: SyncState, drive_sync_interval:
         stats = DriveStats()
 
         destination_path = config_parser.prepare_drive_destination(config=config)
+
+        # Mount-marker failsafe (see _check_mount_marker). Skip this cycle
+        # without advancing the countdown so the next interval re-checks
+        # once the user fixes the mount + touches the marker file.
+        if not _check_mount_marker(
+            destination_path=destination_path,
+            marker_filename=config_parser.get_mount_marker_filename(config=config),
+            required=config_parser.get_drive_require_mount_marker(config=config),
+            service_name="Drive",
+        ):
+            return None
 
         # Count files before sync
         files_before = set()
@@ -243,6 +293,17 @@ def _perform_photos_sync(config, api, sync_state: SyncState, photos_sync_interva
         stats = PhotoStats()
 
         destination_path = config_parser.prepare_photos_destination(config=config)
+
+        # Mount-marker failsafe (see _check_mount_marker). Skip this cycle
+        # without advancing the countdown so the next interval re-checks
+        # once the user fixes the mount + touches the marker file.
+        if not _check_mount_marker(
+            destination_path=destination_path,
+            marker_filename=config_parser.get_mount_marker_filename(config=config),
+            required=config_parser.get_photos_require_mount_marker(config=config),
+            service_name="Photos",
+        ):
+            return None
 
         # Count files before sync
         files_before = set()
@@ -348,7 +409,7 @@ def _send_usage_statistics(config, summary: SyncSummary) -> None:
         "has_drive_activity": bool(summary.drive_stats and summary.drive_stats.has_activity()),
         "has_photos_activity": bool(summary.photo_stats and summary.photo_stats.has_activity()),
         "has_errors": summary.has_errors(),
-        "timestamp": summary.sync_end_time.isoformat() if summary.sync_end_time else None,
+        "timestamp": (summary.sync_end_time.isoformat() if summary.sync_end_time else None),
     }
 
     # Add aggregated statistics (no personal data)
