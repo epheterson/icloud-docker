@@ -87,14 +87,18 @@ def generate_photo_filename_with_metadata(photo, file_size: str) -> str:
     separately to give the user a visible "current view" file plus a hidden
     "untouched original" sidecar.
 
+    Works uniformly across both ``filename_format`` modes — the
+    ``.original.bak`` qualifier is appended to whatever the base filename
+    would have been (``name__filesize__base64id.ext`` in metadata mode or
+    ``name.ext`` in simple mode).
+
     Args:
         photo: Photo object from iCloudPy
         file_size: File size variant (original, medium, thumb, etc.)
 
     Returns:
-        Filename string with format: name__filesize__base64id.extension
-        (plus ``.original.bak`` suffix when the bak-preservation toggle
-        applies to this file).
+        Filename string in the chosen format, plus ``.original.bak`` suffix
+        when the bak-preservation toggle applies to this file.
     """
     name, extension = get_photo_name_and_extension(photo, file_size)
     photo_id_encoded = base64.urlsafe_b64encode(photo.id.encode()).decode()
@@ -104,7 +108,9 @@ def generate_photo_filename_with_metadata(photo, file_size: str) -> str:
     else:
         result = f"{'__'.join([name, file_size, photo_id_encoded])}.{extension}"
 
-    # Apply .original.bak hide-suffix when applicable
+    # Apply .original.bak hide-suffix when applicable. Runs after the base
+    # filename is composed, so it works the same regardless of which naming
+    # convention generated the base.
     if (
         _PRESERVE_ORIGINALS_AS_BAK
         and file_size == "original"
