@@ -106,6 +106,11 @@ def generate_photo_filename_with_metadata(
     the filename ends with ``.original.bak`` so photo browsers skip it but
     the file remains filesystem-recoverable.
 
+    Works uniformly across both ``filename_format`` modes — the
+    ``.original.bak`` qualifier is appended to whatever the base filename
+    would have been (``name__filesize__base64id.ext`` in metadata mode or
+    ``name.ext`` in simple mode).
+
     Args:
         photo: Photo object from iCloudPy
         file_size: File size variant (original, medium, thumb, etc.)
@@ -113,22 +118,28 @@ def generate_photo_filename_with_metadata(
             use the module-level default.
 
     Returns:
-        Filename string in the chosen format, possibly with .original.bak suffix.
+        Filename string in the chosen format, plus ``.original.bak`` suffix
+        when the bak-preservation toggle applies to this file. The bak suffix
+        is appended AFTER the base filename is composed, so it works the same
+        whether the base came from ``simple`` (``IMG_1234.HEIC``) or
+        ``metadata`` (``IMG_1234__original__<id>.HEIC``) mode.
     """
     if filename_format is None:
         filename_format = _DEFAULT_FILENAME_FORMAT
     name, extension = get_photo_name_and_extension(photo, file_size)
 
     if filename_format == "simple":
-        return name if extension == "" else f"{name}.{extension}"
-
-    photo_id_encoded = base64.urlsafe_b64encode(photo.id.encode()).decode()
-    if extension == "":
-        result = f"{'__'.join([name, file_size, photo_id_encoded])}"
+        result = name if extension == "" else f"{name}.{extension}"
     else:
-        result = f"{'__'.join([name, file_size, photo_id_encoded])}.{extension}"
+        photo_id_encoded = base64.urlsafe_b64encode(photo.id.encode()).decode()
+        if extension == "":
+            result = f"{'__'.join([name, file_size, photo_id_encoded])}"
+        else:
+            result = f"{'__'.join([name, file_size, photo_id_encoded])}.{extension}"
 
-    # Apply .original.bak hide-suffix when applicable
+    # Apply .original.bak hide-suffix when applicable. Uniformly handled for
+    # both filename_format modes — simple+bak yields IMG_1234.HEIC.original.bak,
+    # metadata+bak yields IMG_1234__original__<id>.HEIC.original.bak.
     if (
         _PRESERVE_ORIGINALS_AS_BAK
         and file_size == "original"
