@@ -258,6 +258,12 @@ def _perform_drive_sync(config, api, sync_state: SyncState, drive_sync_interval:
                 pass
 
         LOGGER.info("Syncing drive...")
+        try:
+            from src import web_signals as _ws
+
+            _ws.record_sync_started("drive")
+        except ImportError:
+            pass
         files_after = sync_drive.sync_drive(config=config, drive=api.drive)
         LOGGER.info("Drive synced")
 
@@ -336,6 +342,12 @@ def _perform_photos_sync(config, api, sync_state: SyncState, photos_sync_interva
                 pass
 
         LOGGER.info("Syncing photos...")
+        try:
+            from src import web_signals as _ws
+
+            _ws.record_sync_started("photos")
+        except ImportError:
+            pass
         sync_result = sync_photos.sync_photos(config=config, photos=api.photos)
         LOGGER.info("Photos synced")
 

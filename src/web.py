@@ -127,8 +127,18 @@ def _build_service(config: dict, service: str, marker_filename: str) -> dict[str
     marker_path = os.path.join(destination, marker_filename)
     state = web_signals.get_sync_state(service=service)
     stats = None
+    is_running = False
     if state:
         completed_at = state.get("completed_at")
+        started_at = state.get("started_at")
+        # Sync is "running" when started_at is the most recent timestamp
+        # — i.e. sync.py wrote it AND hasn't followed up with a
+        # completion yet. ``record_sync_completion`` clears started_at
+        # on its way out, but we also guard with the timestamp compare
+        # so a stale started_at from a crashed previous run can't trick
+        # the UI forever.
+        if started_at and (not completed_at or started_at > completed_at):
+            is_running = True
         stats = {
             "last_sync_relative": (
                 web_signals.format_relative_time(completed_at) if completed_at else None
@@ -147,6 +157,8 @@ def _build_service(config: dict, service: str, marker_filename: str) -> dict[str
             "errors": state.get("errors", 0),
             "duration_seconds": state.get("duration_seconds"),
         }
+    # Running > queued > idle in display priority.
+    queued = service in web_signals.pending_force_syncs() and not is_running
     return {
         "name": name,
         "destination": destination,
@@ -159,7 +171,8 @@ def _build_service(config: dict, service: str, marker_filename: str) -> dict[str
         "marker_path": marker_path,
         "library_destinations": library_destinations,
         "stats": stats,
-        "force_sync_pending": service in web_signals.pending_force_syncs(),
+        "is_running": is_running,
+        "force_sync_pending": queued,
     }
 
 

@@ -104,6 +104,23 @@ def consume_force_sync(service: str) -> bool:
         return False
 
 
+def record_sync_started(service: str) -> None:
+    """Mark a sync run as in progress.
+
+    The dashboard reads ``started_at`` (set here) vs ``completed_at``
+    (set by ``record_sync_completion``) to surface a live "Running…"
+    state distinct from the "Queued" (sentinel present) and idle
+    states. Best-effort.
+    """
+    if service not in _VALID_SERVICES:
+        return
+    state = _load_state()
+    entry = state.get(service, {})
+    entry["started_at"] = time.time()
+    state[service] = entry
+    _save_state(state)
+
+
 def record_sync_completion(
     service: str,
     *,
@@ -124,6 +141,10 @@ def record_sync_completion(
     state = _load_state()
     entry = state.get(service, {})
     entry["completed_at"] = time.time()
+    # Clearing ``started_at`` flips the dashboard out of the "Running"
+    # state. Leaving ``< completed_at`` would also work but explicit
+    # clearing avoids a stale-clock edge case.
+    entry.pop("started_at", None)
     if files_downloaded is not None:
         entry["files_downloaded"] = int(files_downloaded)
     if files_skipped is not None:

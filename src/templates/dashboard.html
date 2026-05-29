@@ -44,11 +44,6 @@
     <input type="hidden" name="service" value="all">
     <button type="submit" class="btn btn-primary">Sync all now</button>
   </form>
-  {% if status.force_sync_pending %}
-    <span style="font-size: 13px; color: var(--text-tertiary); align-self: center;">
-      &nbsp;Queued: <strong style="color: var(--text);">{{ status.force_sync_pending | join(', ') }}</strong>
-    </span>
-  {% endif %}
 </div>
 {% endif %}
 
@@ -59,53 +54,32 @@
       <div class="card-icon {{ service.name | lower }}">{{ service.name[0] }}</div>
       <div class="card-title-wrap">
         <div class="card-title">{{ service.name }}</div>
-        <div class="card-subtitle">every {{ (service.sync_interval_s // 3600) }} h</div>
-      </div>
-    </div>
-    <dl class="kv">
-      <dt>Destination</dt>
-      <dd class="mono">
-        {{ service.destination }}
-        <span class="path-hint">container-internal path — maps from your <code>volumes:</code> in docker-compose.yml</span>
-      </dd>
-      <dt>Interval</dt><dd>{{ service.sync_interval_s }} s</dd>
-      <dt>Mount marker</dt>
-      <dd>
-        {% if service.require_mount_marker %}
-          {% if service.marker_present %}
-            <span class="pill success">required · present</span>
-          {% else %}
-            <span class="pill err">required · missing</span>
+        <div class="card-subtitle">
+          every {{ (service.sync_interval_s // 3600) }} h
+          {% if service.stats and service.stats.last_sync_relative %}
+            · last sync {{ service.stats.last_sync_relative }}
           {% endif %}
-        {% else %}
-          {% if service.marker_present %}
-            <span class="pill success">present (optional)</span>
-          {% else %}
-            <span class="pill warn">not required</span>
-          {% endif %}
-        {% endif %}
-        <div class="mono" style="color: var(--text-tertiary); margin-top: 4px; font-size: 12px;">{{ service.marker_path }}</div>
-      </dd>
-    </dl>
-    {% if service.library_destinations %}
-    <div class="section-label">Library destinations</div>
-    {% for lib_name, subdir in service.library_destinations.items() %}
-      <div class="lib-row mono">
-        <span>{{ lib_name }}</span>
-        <span class="arrow">→</span>
-        <span>{{ subdir }}/</span>
+        </div>
       </div>
-    {% endfor %}
-    {% endif %}
-
-    {% if service.stats %}
-    <div class="stats">
-      {% if service.stats.last_sync_relative %}
-      <div class="stat">
-        <div class="stat-value">{{ service.stats.last_sync_relative }}</div>
-        <div class="stat-label">Last sync</div>
-      </div>
+      {# Right-aligned sync state pill / button — single primary action per card. #}
+      {% if service.is_running %}
+        <span class="sync-state running" aria-label="Sync currently running">
+          <span class="spinner" aria-hidden="true"></span>Running…
+        </span>
+      {% elif service.force_sync_pending %}
+        <span class="sync-state queued" aria-label="Sync queued for next loop iteration">Queued ✓</span>
+      {% else %}
+        <form action="/api/sync" method="post" style="display:contents">
+          <input type="hidden" name="service" value="{{ service.name | lower }}">
+          <button type="submit" class="btn btn-small btn-primary">Sync now</button>
+        </form>
       {% endif %}
+    </div>
+
+    {# Stats row, only when there's history to show. Tabular numerals
+       keep the numbers from jiggling between refreshes. #}
+    {% if service.stats and (service.stats.files_downloaded is not none or service.stats.files_skipped is not none) %}
+    <div class="stats">
       {% if service.stats.files_downloaded is not none %}
       <div class="stat">
         <div class="stat-value">{{ service.stats.files_downloaded }}</div>
@@ -124,18 +98,45 @@
         <div class="stat-label">On disk</div>
       </div>
       {% endif %}
+      {% if service.stats.errors %}
+      <div class="stat">
+        <div class="stat-value" style="color: var(--err-fg);">{{ service.stats.errors }}</div>
+        <div class="stat-label">Errors</div>
+      </div>
+      {% endif %}
     </div>
     {% endif %}
 
-    <div class="card-actions">
-      <form action="/api/sync" method="post" style="display:contents">
-        <input type="hidden" name="service" value="{{ service.name | lower }}">
-        <button type="submit" class="btn btn-small btn-primary"
-                {% if service.force_sync_pending %}disabled{% endif %}>
-          {% if service.force_sync_pending %}Queued ✓{% else %}Sync now{% endif %}
-        </button>
-      </form>
-    </div>
+    <dl class="kv">
+      <dt>Destination</dt><dd class="mono">{{ service.destination }}</dd>
+      <dt>Mount marker</dt>
+      <dd>
+        {% if service.require_mount_marker %}
+          {% if service.marker_present %}
+            <span class="pill success">required · present</span>
+          {% else %}
+            <span class="pill err">required · missing</span>
+          {% endif %}
+        {% else %}
+          {% if service.marker_present %}
+            <span class="pill success">present (optional)</span>
+          {% else %}
+            <span class="pill warn">not required</span>
+          {% endif %}
+        {% endif %}
+      </dd>
+    </dl>
+
+    {% if service.library_destinations %}
+    <div class="section-label">Library destinations</div>
+    {% for lib_name, subdir in service.library_destinations.items() %}
+      <div class="lib-row mono">
+        <span>{{ lib_name }}</span>
+        <span class="arrow">→</span>
+        <span>{{ subdir }}/</span>
+      </div>
+    {% endfor %}
+    {% endif %}
   </div>
 {% endfor %}
 </div>
@@ -146,8 +147,18 @@
     <a href="/api/logs" class="mono" style="font-size: 12px;">/api/logs</a>
   </div>
   {% if log_lines %}
-    <pre class="logs">{% for line in log_lines %}{{ line }}
+    <pre class="logs" id="logs">{% for line in log_lines %}{{ line }}
 {% endfor %}</pre>
+    <script>
+      // Auto-scroll the log viewer to the most recent line on page load.
+      // The block-level pre tag fills its container top-down by default —
+      // users have to scroll manually to see the tail. Behaviour matches
+      // every other log-tail UI (Discord, GitHub Actions, etc.).
+      (function() {
+        var pre = document.getElementById('logs');
+        if (pre) pre.scrollTop = pre.scrollHeight;
+      })();
+    </script>
   {% else %}
     <div class="logs-empty">No log file found at <span class="mono">{{ log_path or "(unset)" }}</span>.</div>
   {% endif %}
