@@ -32,7 +32,7 @@ LOGGER = get_logger()
 def get_api_instance(
     username: str,
     password: str,
-    cookie_directory: str = DEFAULT_COOKIE_DIRECTORY,
+    cookie_directory: str | None = None,
     server_region: str = "global",
 ) -> ICloudPyService:
     """
@@ -41,12 +41,24 @@ def get_api_instance(
     Args:
         username: iCloud username/Apple ID
         password: iCloud password
-        cookie_directory: Directory to store authentication cookies
+        cookie_directory: Directory to store authentication cookies.
+            When ``None`` (the default), resolved late from
+            ``src.DEFAULT_COOKIE_DIRECTORY`` so test fixtures that
+            redirect the constant at runtime take effect (the previous
+            ``str = DEFAULT_COOKIE_DIRECTORY`` capture made the default
+            unmockable post-import).
         server_region: Server region ("china" or "global")
 
     Returns:
         Configured ICloudPyService instance
     """
+    if cookie_directory is None:
+        # Late-bound import so conftest fixtures that monkey-patch
+        # ``src.DEFAULT_COOKIE_DIRECTORY`` for tests on hosts without
+        # ``/config`` (macOS, sandboxes) actually take effect.
+        import src as _src
+
+        cookie_directory = _src.DEFAULT_COOKIE_DIRECTORY
     return (
         ICloudPyService(
             apple_id=username,

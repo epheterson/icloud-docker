@@ -37,10 +37,20 @@ class TestCheckLibrary(unittest.TestCase):
     def setUp(self):
         # mandarons' filename_format singleton needs setting because
         # check_migration normally does it but here we test the inner
-        # walker in isolation.
-        from src.photo_path_utils import set_default_filename_format
+        # walker in isolation. Snapshot the previous value so tearDown
+        # can restore it — otherwise the "simple" override bleeds into
+        # the next test file (test_preserve_originals_as_bak expects
+        # the "metadata" default and fails with a cryptic suffix
+        # mismatch).
+        from src import photo_path_utils
 
-        set_default_filename_format("simple")
+        self._prev_filename_format = photo_path_utils._DEFAULT_FILENAME_FORMAT
+        photo_path_utils.set_default_filename_format("simple")
+
+    def tearDown(self):
+        from src import photo_path_utils
+
+        photo_path_utils._DEFAULT_FILENAME_FORMAT = self._prev_filename_format
 
     def test_empty_library(self):
         with tempfile.TemporaryDirectory() as base:
