@@ -825,6 +825,23 @@ def sync(dry_run: bool = False, check_files: int | None = None):
         )
         username = config_parser.get_username(config=config) if config else None
 
+        # Web UI "Sync now" requests: ``src.web_signals`` writes a
+        # sentinel file when the user taps the button; we delete it and
+        # zero the countdown so the next pass through the sync calls
+        # runs immediately. Best-effort import so vanilla mandarons
+        # builds without the web-UI module still work.
+        try:
+            from src import web_signals as _ws
+
+            if _ws.consume_force_sync("drive"):
+                LOGGER.info("Force-sync requested for Drive — running immediately")
+                sync_state.drive_time_remaining = 0
+            if _ws.consume_force_sync("photos"):
+                LOGGER.info("Force-sync requested for Photos — running immediately")
+                sync_state.photos_time_remaining = 0
+        except ImportError:
+            pass
+
         if username:
             try:
                 api = _authenticate_and_get_api(config, username)
@@ -857,6 +874,36 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                     summary.drive_stats = drive_stats
                     summary.photo_stats = photos_stats
                     summary.sync_end_time = datetime.datetime.now()
+
+                    # Persist per-service last-sync state for the web
+                    # dashboard. Best-effort — if the JSON write fails
+                    # the sync itself is unaffected.
+                    try:
+                        from src import web_signals as _ws
+
+                        if drive_stats is not None:
+                            _ws.record_sync_completion(
+                                service="drive",
+                                files_downloaded=drive_stats.files_downloaded,
+                                files_skipped=drive_stats.files_skipped,
+                                files_removed=drive_stats.files_removed,
+                                errors=len(drive_stats.errors),
+                                duration_seconds=drive_stats.duration_seconds,
+                            )
+                        if photos_stats is not None:
+                            _ws.record_sync_completion(
+                                service="photos",
+                                files_downloaded=photos_stats.photos_downloaded,
+                                files_skipped=photos_stats.photos_skipped,
+                                errors=len(photos_stats.errors),
+                                duration_seconds=photos_stats.duration_seconds,
+                            )
+                    except ImportError:
+                        pass
+                    except Exception as e:
+                        LOGGER.debug(
+                            f"web_signals: record_sync_completion raised: {e!s}"
+                        )
 
                     # Send usage statistics (anonymized summary data)
                     try:
