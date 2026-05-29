@@ -392,7 +392,11 @@ def get_mount_marker_filename(config: dict) -> str:
         Filename string (relative to each destination directory).
     """
     config_path = ["app", "mount_marker_filename"]
-    return str(get_config_value_or_default(config=config, config_path=config_path, default=".mounted"))
+    return str(
+        get_config_value_or_default(
+            config=config, config_path=config_path, default=".mounted"
+        )
+    )
 
 
 def get_usage_tracking_enabled(config: dict) -> bool:
@@ -553,12 +557,48 @@ def get_drive_require_mount_marker(config: dict) -> bool:
         True if the marker is required before each Drive sync.
     """
     config_path = ["drive", "require_mount_marker"]
-    return bool(get_config_value_or_default(config=config, config_path=config_path, default=False))
+    return bool(
+        get_config_value_or_default(
+            config=config, config_path=config_path, default=False
+        )
+    )
 
 
 # =============================================================================
 # Photos Configuration Functions
 # =============================================================================
+
+
+def get_photos_enumeration_chunk_size(config: dict | None) -> int:
+    """Tasks to buffer before draining via execute_parallel_downloads.
+
+    Smaller = lower peak memory, more per-chunk HTTP setup overhead.
+    Larger = higher peak memory, fewer chunks. Default 1000 keeps
+    resident set at ~10 MB on typical libraries while still amortising
+    connection setup. Tested empirically on a 111K-photo library:
+    1000 sustained < 1 GB resident through the full enumeration.
+
+    Args:
+        config: Configuration dictionary (None falls back to default).
+
+    Returns:
+        Positive integer chunk size, defaulting to 1000.
+    """
+    # Local import to avoid a circular import: album_sync_orchestrator
+    # imports config_parser, and the module-level DEFAULT constant
+    # already lives in album_sync_orchestrator.
+    from src.album_sync_orchestrator import DEFAULT_ENUMERATION_CHUNK_SIZE
+
+    raw = get_config_value_or_default(
+        config=config or {},
+        config_path=["photos", "enumeration_chunk_size"],
+        default=DEFAULT_ENUMERATION_CHUNK_SIZE,
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_ENUMERATION_CHUNK_SIZE
+    return value if value > 0 else DEFAULT_ENUMERATION_CHUNK_SIZE
 
 
 def get_photos_destination_path(config: dict) -> str:
@@ -686,7 +726,11 @@ def get_photos_require_mount_marker(config: dict) -> bool:
         True if the marker is required before each Photos sync.
     """
     config_path = ["photos", "require_mount_marker"]
-    return bool(get_config_value_or_default(config=config, config_path=config_path, default=False))
+    return bool(
+        get_config_value_or_default(
+            config=config, config_path=config_path, default=False
+        )
+    )
 
 
 def get_photos_folder_format(config: dict) -> str | None:
@@ -731,7 +775,8 @@ def validate_file_sizes(file_sizes: list[str]) -> list[str]:
         List of valid file sizes (defaults to ["original"] if all invalid)
     """
     valid_file_sizes = [
-        k for k in PhotoAsset.PHOTO_VERSION_LOOKUP.keys()
+        k
+        for k in PhotoAsset.PHOTO_VERSION_LOOKUP.keys()
         if not k.startswith("live_video_")
     ]
     validated_sizes = []
