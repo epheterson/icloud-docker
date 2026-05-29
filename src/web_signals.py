@@ -129,6 +129,7 @@ def record_sync_completion(
     files_removed: int | None = None,
     errors: int | None = None,
     duration_seconds: float | None = None,
+    bytes_downloaded: int | None = None,
 ) -> None:
     """Persist per-service stats after a sync run completes.
 
@@ -155,8 +156,42 @@ def record_sync_completion(
         entry["errors"] = int(errors)
     if duration_seconds is not None:
         entry["duration_seconds"] = float(duration_seconds)
+    if bytes_downloaded is not None:
+        entry["bytes_downloaded"] = int(bytes_downloaded)
     state[service] = entry
     _save_state(state)
+
+
+def format_bytes(n: int | float | None) -> str:
+    """Compact human-friendly bytes formatting for the dashboard.
+
+    "0", "512 B", "12.4 KB", "3.2 MB", "1.8 GB". Uses base-1024 (KB,
+    MB, GB) to match what every Mac / Synology UI shows and what
+    users expect for storage sizes.
+    """
+    if not n:
+        return "0"
+    n = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def format_duration(seconds: float | None) -> str:
+    """Compact "5s" / "1m 23s" / "1h 2m" formatting for durations.
+
+    Skips zero/None gracefully — the dashboard renders absence.
+    """
+    if not seconds:
+        return ""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
 
 
 def get_sync_state(service: str) -> dict[str, Any]:

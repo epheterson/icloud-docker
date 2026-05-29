@@ -1,5 +1,13 @@
 {% extends "base.html" %}
 {% block title %}iCloud Docker · Status{% endblock %}
+{% block header_actions %}
+  {% if status.services %}
+  <form action="/api/sync" method="post" style="display:contents">
+    <input type="hidden" name="service" value="all">
+    <button type="submit" class="btn btn-primary btn-small" style="margin-left: 8px;">Sync all</button>
+  </form>
+  {% endif %}
+{% endblock %}
 {% block content %}
 
 <h1 class="page-title">Status</h1>
@@ -35,15 +43,6 @@
   <div class="status-actions">
     <a class="status-cta" href="/auth">Set up</a>
   </div>
-</div>
-{% endif %}
-
-{% if status.services %}
-<div class="global-actions">
-  <form action="/api/sync" method="post" style="display:contents">
-    <input type="hidden" name="service" value="all">
-    <button type="submit" class="btn btn-primary">Sync all now</button>
-  </form>
 </div>
 {% endif %}
 
@@ -149,19 +148,125 @@
   {% if log_lines %}
     <pre class="logs" id="logs">{% for line in log_lines %}{{ line }}
 {% endfor %}</pre>
-    <script>
-      // Auto-scroll the log viewer to the most recent line on page load.
-      // The block-level pre tag fills its container top-down by default —
-      // users have to scroll manually to see the tail. Behaviour matches
-      // every other log-tail UI (Discord, GitHub Actions, etc.).
-      (function() {
-        var pre = document.getElementById('logs');
-        if (pre) pre.scrollTop = pre.scrollHeight;
-      })();
-    </script>
   {% else %}
     <div class="logs-empty">No log file found at <span class="mono">{{ log_path or "(unset)" }}</span>.</div>
   {% endif %}
 </div>
+
+<script>
+/**
+ * Dashboard live-refresh.
+ *
+ * Polls /api/status and /api/logs every few seconds and patches the
+ * action pill, subtitle, stats grid, and log tail in place — no full
+ * page reload, no flicker. The user's scroll position is preserved.
+ *
+ * All DOM mutation goes through textContent + createElement: never
+ * innerHTML, so a hypothetically attacker-controlled config value
+ * (library name etc.) can't smuggle markup into the page.
+ */
+(function() {
+  var POLL_MS = 4000;
+
+  function el(tag, attrs, text) {
+    var node = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function(k) {
+      if (k === 'class') node.className = attrs[k];
+      else if (k === 'style') node.setAttribute('style', attrs[k]);
+      else node.setAttribute(k, attrs[k]);
+    });
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function replaceChildren(parent, child) {
+    while (parent.firstChild) parent.removeChild(parent.firstChild);
+    if (child) parent.appendChild(child);
+  }
+
+  function buildSubtitle(svc) {
+    var parts = ['every ' + Math.floor(svc.sync_interval_s / 3600) + ' h'];
+    if (svc.stats && svc.stats.last_sync_relative) parts.push('last sync ' + svc.stats.last_sync_relative);
+    return parts.join(' · ');
+  }
+
+  function buildAction(svc) {
+    if (svc.is_running) {
+      var pill = el('span', { 'class': 'sync-state running', 'aria-label': 'Sync currently running' });
+      pill.appendChild(el('span', { 'class': 'spinner', 'aria-hidden': 'true' }));
+      pill.appendChild(document.createTextNode('Running…'));
+      return pill;
+    }
+    if (svc.force_sync_pending) {
+      return el('span', { 'class': 'sync-state queued', 'aria-label': 'Sync queued' }, 'Queued ✓');
+    }
+    var form = el('form', { action: '/api/sync', method: 'post', style: 'display:contents' });
+    form.appendChild(el('input', { type: 'hidden', name: 'service', value: String(svc.name).toLowerCase() }));
+    form.appendChild(el('button', { type: 'submit', 'class': 'btn btn-small btn-primary' }, 'Sync now'));
+    return form;
+  }
+
+  function buildStat(value, label, isError) {
+    var stat = el('div', { 'class': 'stat' });
+    var v = el('div', { 'class': 'stat-value' }, String(value));
+    if (isError) v.setAttribute('style', 'color: var(--err-fg);');
+    stat.appendChild(v);
+    stat.appendChild(el('div', { 'class': 'stat-label' }, label));
+    return stat;
+  }
+
+  function buildStats(svc) {
+    var s = svc.stats;
+    if (!s) return null;
+    if (s.files_downloaded == null && s.files_skipped == null) return null;
+    var box = el('div', { 'class': 'stats' });
+    if (s.files_downloaded != null) box.appendChild(buildStat(s.files_downloaded, 'New'));
+    if (s.files_skipped != null) box.appendChild(buildStat(s.files_skipped, 'Skipped'));
+    if (s.bytes_downloaded) box.appendChild(buildStat(s.bytes_human, 'Downloaded'));
+    if (s.duration_human) box.appendChild(buildStat(s.duration_human, 'Duration'));
+    if (s.errors) box.appendChild(buildStat(s.errors, 'Errors', true));
+    return box;
+  }
+
+  function refreshStatus() {
+    fetch('/api/status', { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function(data) {
+        (data.services || []).forEach(function(svc) {
+          var card = document.querySelector('.card[data-service="' + String(svc.name).toLowerCase() + '"]');
+          if (!card) return;
+          var sub = card.querySelector('[data-field="subtitle"]');
+          var act = card.querySelector('[data-field="action"]');
+          var stats = card.querySelector('[data-field="stats"]');
+          if (sub) sub.textContent = buildSubtitle(svc);
+          if (act) replaceChildren(act, buildAction(svc));
+          if (stats) replaceChildren(stats, buildStats(svc));
+        });
+      })
+      .catch(function() {});
+  }
+
+  function refreshLogs() {
+    fetch('/api/logs')
+      .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function(data) {
+        var pre = document.getElementById('logs');
+        if (!pre || !data.lines) return;
+        var nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 80;
+        pre.textContent = data.lines.join('\n') + '\n';
+        if (nearBottom) pre.scrollTop = pre.scrollHeight;
+      })
+      .catch(function() {});
+  }
+
+  // Initial scroll-to-bottom on page load — log <pre> is otherwise
+  // top-aligned and hides the most recent lines.
+  var pre = document.getElementById('logs');
+  if (pre) pre.scrollTop = pre.scrollHeight;
+
+  setInterval(refreshStatus, POLL_MS);
+  setInterval(refreshLogs, POLL_MS);
+})();
+</script>
 
 {% endblock %}

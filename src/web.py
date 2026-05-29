@@ -156,6 +156,11 @@ def _build_service(config: dict, service: str, marker_filename: str) -> dict[str
             ),
             "errors": state.get("errors", 0),
             "duration_seconds": state.get("duration_seconds"),
+            "duration_human": web_signals.format_duration(
+                state.get("duration_seconds")
+            ),
+            "bytes_downloaded": state.get("bytes_downloaded"),
+            "bytes_human": web_signals.format_bytes(state.get("bytes_downloaded")),
         }
     # Running > queued > idle in display priority.
     queued = service in web_signals.pending_force_syncs() and not is_running

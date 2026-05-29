@@ -901,6 +901,7 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                                 files_removed=drive_stats.files_removed,
                                 errors=len(drive_stats.errors),
                                 duration_seconds=drive_stats.duration_seconds,
+                                bytes_downloaded=drive_stats.bytes_downloaded,
                             )
                         if photos_stats is not None:
                             _ws.record_sync_completion(
@@ -909,6 +910,7 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                                 files_skipped=photos_stats.photos_skipped,
                                 errors=len(photos_stats.errors),
                                 duration_seconds=photos_stats.duration_seconds,
+                                bytes_downloaded=photos_stats.bytes_downloaded,
                             )
                     except ImportError:
                         pass
