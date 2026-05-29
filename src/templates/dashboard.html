@@ -1,17 +1,19 @@
 {% extends "base.html" %}
 {% block title %}iCloud Docker · Status{% endblock %}
-{% block header_actions %}
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Status</h1>
+    <p class="page-sub mono">{{ status.config_path }}</p>
+  </div>
   {% if status.services %}
   <form action="/api/sync" method="post" style="display:contents">
     <input type="hidden" name="service" value="all">
-    <button type="submit" class="btn btn-primary btn-small" style="margin-left: 8px;">Sync all</button>
+    <button type="submit" class="btn btn-primary page-action">Sync all</button>
   </form>
   {% endif %}
-{% endblock %}
-{% block content %}
-
-<h1 class="page-title">Status</h1>
-<p class="page-sub mono">{{ status.config_path }}</p>
+</div>
 
 {% set auth = status.auth_state | default('not_configured') %}
 {% if auth == 'ready' %}
