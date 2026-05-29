@@ -142,5 +142,136 @@ class TestCheckLibrary(unittest.TestCase):
             self.assertEqual(result["checked"], 10)
 
 
+def _fake_drive_file(name: str, size: int):
+    """Build a MagicMock that quacks like an icloudpy Drive file node."""
+    node = MagicMock()
+    node.name = name
+    node.type = "file"
+    node.size = size
+    return node
+
+
+def _fake_drive_folder(name: str, children: dict):
+    """Build a MagicMock that quacks like an icloudpy Drive folder node.
+
+    ``children`` is a dict mapping child-name → child-mock (file or folder).
+    """
+    node = MagicMock()
+    node.name = name
+    node.type = "folder"
+    node.dir.return_value = list(children.keys())
+    node.__getitem__.side_effect = lambda key: children[key]
+    return node
+
+
+class TestCheckDrive(unittest.TestCase):
+    """Behaviour of the iCloud Drive walker."""
+
+    def test_empty_drive(self):
+        with tempfile.TemporaryDirectory() as base:
+            drive = _fake_drive_folder("root", {})
+            result = migration_check.check_drive(
+                drive=drive, drive_destination=base, sample=0
+            )
+            self.assertEqual(result["checked"], 0)
+            self.assertEqual(result["stats"]["would_skip"], 0)
+            self.assertEqual(result["stats"]["not_found"], 0)
+
+    def test_all_files_present_at_root(self):
+        with tempfile.TemporaryDirectory() as base:
+            # Three files on disk with known sizes
+            for name, size in [("a.txt", 100), ("b.txt", 200), ("c.txt", 300)]:
+                with open(os.path.join(base, name), "wb") as f:
+                    f.write(b"x" * size)
+            drive = _fake_drive_folder(
+                "root",
+                {
+                    "a.txt": _fake_drive_file("a.txt", 100),
+                    "b.txt": _fake_drive_file("b.txt", 200),
+                    "c.txt": _fake_drive_file("c.txt", 300),
+                },
+            )
+            result = migration_check.check_drive(
+                drive=drive, drive_destination=base, sample=0
+            )
+            self.assertEqual(result["stats"]["would_skip"], 3)
+            self.assertEqual(result["stats"]["size_mismatch"], 0)
+            self.assertEqual(result["stats"]["not_found"], 0)
+            self.assertEqual(result["checked"], 3)
+
+    def test_missing_and_size_mismatch_at_root(self):
+        with tempfile.TemporaryDirectory() as base:
+            # a.txt matches; b.txt wrong size; c.txt missing.
+            with open(os.path.join(base, "a.txt"), "wb") as f:
+                f.write(b"x" * 100)
+            with open(os.path.join(base, "b.txt"), "wb") as f:
+                f.write(b"x" * 50)  # expected 200
+            drive = _fake_drive_folder(
+                "root",
+                {
+                    "a.txt": _fake_drive_file("a.txt", 100),
+                    "b.txt": _fake_drive_file("b.txt", 200),
+                    "c.txt": _fake_drive_file("c.txt", 300),
+                },
+            )
+            result = migration_check.check_drive(
+                drive=drive, drive_destination=base, sample=0
+            )
+            self.assertEqual(result["stats"]["would_skip"], 1)
+            self.assertEqual(result["stats"]["size_mismatch"], 1)
+            self.assertEqual(result["stats"]["not_found"], 1)
+            self.assertEqual(len(result["samples"]["size_mismatch"]), 1)
+            _, expected, actual = result["samples"]["size_mismatch"][0]
+            self.assertEqual(expected, 200)
+            self.assertEqual(actual, 50)
+
+    def test_recurses_into_subfolders(self):
+        with tempfile.TemporaryDirectory() as base:
+            # On-disk: base/sub/leaf.txt @ 42 bytes
+            os.makedirs(os.path.join(base, "sub"))
+            with open(os.path.join(base, "sub", "leaf.txt"), "wb") as f:
+                f.write(b"x" * 42)
+            sub_folder = _fake_drive_folder(
+                "sub", {"leaf.txt": _fake_drive_file("leaf.txt", 42)}
+            )
+            drive = _fake_drive_folder("root", {"sub": sub_folder})
+            result = migration_check.check_drive(
+                drive=drive, drive_destination=base, sample=0
+            )
+            self.assertEqual(result["stats"]["would_skip"], 1)
+            self.assertEqual(result["checked"], 1)
+
+    def test_unpacked_package_directory_counts_as_skip_when_size_matches(self):
+        """Mandarons-unpacked packages live as directories on disk; sum
+        of contained-file sizes must match the package item size."""
+        with tempfile.TemporaryDirectory() as base:
+            # Package directory with two inner files summing to 150
+            pkg_path = os.path.join(base, "Project.band")
+            os.makedirs(pkg_path)
+            with open(os.path.join(pkg_path, "metadata.plist"), "wb") as f:
+                f.write(b"x" * 50)
+            with open(os.path.join(pkg_path, "projectdata"), "wb") as f:
+                f.write(b"x" * 100)
+            drive = _fake_drive_folder(
+                "root", {"Project.band": _fake_drive_file("Project.band", 150)}
+            )
+            result = migration_check.check_drive(
+                drive=drive, drive_destination=base, sample=0
+            )
+            self.assertEqual(result["stats"]["would_skip"], 1)
+            self.assertEqual(result["stats"]["size_mismatch"], 0)
+
+    def test_sample_caps_drive_walk_at_N(self):
+        with tempfile.TemporaryDirectory() as base:
+            children = {
+                f"f{i}.txt": _fake_drive_file(f"f{i}.txt", 100) for i in range(20)
+            }
+            drive = _fake_drive_folder("root", children)
+            result = migration_check.check_drive(
+                drive=drive, drive_destination=base, sample=5
+            )
+            self.assertEqual(result["checked"], 5)
+
+
 if __name__ == "__main__":
     unittest.main()
