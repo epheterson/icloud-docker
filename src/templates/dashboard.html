@@ -3,14 +3,14 @@
 {% block content %}
 
 <div class="page-header">
-  <div>
+  <div class="page-header-text">
     <h1 class="page-title">Status</h1>
     <p class="page-sub mono">{{ status.config_path }}</p>
   </div>
   {% if status.services %}
-  <form action="/api/sync" method="post" style="display:contents">
+  <form action="/api/sync" method="post" class="page-action">
     <input type="hidden" name="service" value="all">
-    <button type="submit" class="btn btn-primary page-action">Sync all</button>
+    <button type="submit" class="btn btn-primary">Sync all</button>
   </form>
   {% endif %}
 </div>
