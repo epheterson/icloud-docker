@@ -64,6 +64,57 @@ class TestGetTrustExpiryWarnDays(unittest.TestCase):
         self.assertEqual(config_parser.get_trust_expiry_warn_days(config=cfg), 14)
 
 
+class TestGetNotificationTitle(unittest.TestCase):
+    """app.notification_title reader. Default 'icloud-docker'."""
+
+    def test_default(self):
+        from src import config_parser
+
+        self.assertEqual(
+            config_parser.get_notification_title(config={}),
+            "icloud-docker",
+        )
+
+    def test_override(self):
+        from src import config_parser
+
+        cfg = {"app": {"notification_title": "Eric's iCloud"}}
+        self.assertEqual(
+            config_parser.get_notification_title(config=cfg),
+            "Eric's iCloud",
+        )
+
+
+class TestCustomTitlePropagatesToMessages(unittest.TestCase):
+    """The title threads through both ``_create_*_message`` builders so
+    Telegram lock-screen previews start with whatever the user named
+    their container -- useful for disambiguating multiple instances."""
+
+    def test_2fa_message_uses_custom_title(self):
+        from src.notify import _create_2fa_message  # noqa: SLF001
+
+        msg, subj = _create_2fa_message(
+            "u@e.com",
+            region="global",
+            dashboard_url="https://x.example.com",
+            title="Eric's iCloud",
+        )
+        self.assertTrue(msg.startswith("Eric's iCloud:"))
+        self.assertTrue(subj.startswith("Eric's iCloud:"))
+
+    def test_trust_message_uses_custom_title(self):
+        from src.notify import _create_trust_expiring_message  # noqa: SLF001
+
+        msg, subj = _create_trust_expiring_message(
+            "u@e.com",
+            days_remaining=5,
+            dashboard_url="https://x.example.com",
+            title="Eric's iCloud",
+        )
+        self.assertTrue(msg.startswith("Eric's iCloud:"))
+        self.assertTrue(subj.startswith("Eric's iCloud:"))
+
+
 class TestCreate2faMessageWithUrl(unittest.TestCase):
     """_create_2fa_message URL branch."""
 

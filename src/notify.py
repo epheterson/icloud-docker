@@ -39,6 +39,7 @@ def _create_2fa_message(
     username: str,
     region: str = "global",
     dashboard_url: str | None = None,
+    title: str = "icloud-docker",
 ) -> tuple[str, str]:
     """
     Create the 2FA notification message and subject.
@@ -51,20 +52,21 @@ def _create_2fa_message(
             exec command. Set from ``app.web_ui.public_url`` (or the
             host:port fallback) by ``send()`` when ``app.web_ui.enabled``
             is true.
+        title: Identifier prefix on body + subject (default
+            ``"icloud-docker"``). Threaded from
+            ``config_parser.get_notification_title``.
 
     Returns:
         Tuple of (message, subject)
     """
     if dashboard_url:
-        message = (
-            f"icloud-docker: iCloud login required. Sign in at {dashboard_url}/auth"
-        )
+        message = f"{title}: iCloud login required. Sign in at {dashboard_url}/auth"
     else:
         region_opt = "" if region == "global" else f"--region={region} "
         message = f"""Two-step authentication for iCloud Drive, Photos (Docker) is required.
                 Please login to your server and authenticate. Please run -
                 `docker exec -it icloud /bin/sh -c "su-exec abc icloud --session-directory=/config/session_data {region_opt}--username={username}"`."""  # noqa: E501
-    subject = f"icloud-docker: iCloud login required for {username}"
+    subject = f"{title}: iCloud login required for {username}"
     return message, subject
 
 
@@ -72,6 +74,7 @@ def _create_trust_expiring_message(
     username: str,
     days_remaining: int,
     dashboard_url: str | None = None,
+    title: str = "icloud-docker",
 ) -> tuple[str, str]:
     """
     Create the trust-expiring notification message and subject.
@@ -86,6 +89,8 @@ def _create_trust_expiring_message(
         dashboard_url: Web UI URL (optional). When provided, the message
             tells the user to tap the URL to refresh trust without
             retyping their password.
+        title: Identifier prefix on body + subject (default
+            ``"icloud-docker"``).
 
     Returns:
         Tuple of (message, subject)
@@ -96,15 +101,13 @@ def _create_trust_expiring_message(
         else f"in {days_remaining} day{'s' if days_remaining != 1 else ''}"
     )
     if dashboard_url:
-        message = (
-            f"icloud-docker: iCloud login expires {horizon}, refresh at {dashboard_url}"
-        )
+        message = f"{title}: iCloud login expires {horizon}, refresh at {dashboard_url}"
     else:
         message = (
-            f"icloud-docker: iCloud login expires {horizon}. "
+            f"{title}: iCloud login expires {horizon}. "
             f"Sign in to the container to refresh before the next sync fails."
         )
-    subject = f"icloud-docker: iCloud login for {username} expires {horizon}"
+    subject = f"{title}: iCloud login for {username} expires {horizon}"
     return message, subject
 
 
@@ -488,6 +491,7 @@ def send(
         username,
         region,
         dashboard_url=dashboard_url,
+        title=config_parser.get_notification_title(config=config),
     )
 
     # Send to all notification services
@@ -561,6 +565,7 @@ def send_trust_expiring(
         username,
         days_remaining,
         dashboard_url=dashboard_url,
+        title=config_parser.get_notification_title(config=config),
     )
     telegram_sent = notify_telegram(
         config=config,
