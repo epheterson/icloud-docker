@@ -1,7 +1,9 @@
 """Send notifications when 2FA is required for iCloud authentication."""
 
 import datetime
+import re
 import smtplib
+from typing import Any
 
 import requests
 
@@ -186,6 +188,81 @@ def post_message_to_telegram(bot_token: str, chat_id: str, message: str) -> bool
     # Log error message
     LOGGER.error(f"Failed to send telegram notification. Response: {response.text}")
     return False
+
+
+_TWO_FA_CODE_RE = re.compile(r"^\d{6}$")
+
+
+def poll_telegram_for_code(
+    bot_token: str,
+    chat_id: str,
+    offset: int = 0,
+    request_timeout: int = 10,
+) -> tuple[str | None, int]:
+    """Poll Telegram getUpdates for a 6-digit reply from ``chat_id``.
+
+    Returns ``(code, new_offset)``:
+      - ``code`` is the first ``^\\d{6}$`` text message from the configured
+        ``chat_id`` newer than ``offset``, or ``None`` if no such message.
+      - ``new_offset`` is the highest ``update_id`` we observed (regardless
+        of whether it produced a code), so the next poll skips messages we
+        already saw. Caller persists this between polls via
+        ``web_signals.record_telegram_offset``.
+
+    Telegram silently drops updates older than 24 hours, so an offset
+    that's "too old" just returns nothing -- safe to start from 0 on
+    fresh boot. Network / API failures are logged + swallowed; the
+    function returns ``(None, offset)`` so the caller keeps trying.
+
+    Anything from a chat other than ``chat_id`` is ignored. Anything
+    other than a 6-digit text message is ignored. Both filters track
+    update_id forward so we don't loop on the same noise.
+    """
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    params: dict[str, Any] = {
+        "offset": offset + 1,
+        "allowed_updates": '["message"]',
+        "timeout": 0,  # no long-poll on the server side; we control cadence
+    }
+    try:
+        response = requests.post(url, params=params, timeout=request_timeout)
+    except (requests.RequestException, OSError) as e:
+        LOGGER.warning(f"telegram getUpdates failed: {e!s}")
+        return None, offset
+
+    if response.status_code != 200:
+        LOGGER.warning(
+            f"telegram getUpdates returned {response.status_code}: {response.text[:200]}",
+        )
+        return None, offset
+
+    try:
+        payload = response.json()
+    except ValueError as e:
+        LOGGER.warning(f"telegram getUpdates: malformed JSON: {e!s}")
+        return None, offset
+
+    updates = payload.get("result") or []
+    code_found: str | None = None
+    new_offset = offset
+    for update in updates:
+        update_id = update.get("update_id")
+        if isinstance(update_id, int) and update_id > new_offset:
+            new_offset = update_id
+        if code_found is not None:
+            continue  # still walk to advance offset past extra updates
+        message = update.get("message") or {}
+        chat = message.get("chat") or {}
+        # Telegram chat_id can come back as int OR string depending on the
+        # message origin; compare as strings to tolerate both.
+        if str(chat.get("id")) != str(chat_id):
+            continue
+        text = (message.get("text") or "").strip()
+        if _TWO_FA_CODE_RE.fullmatch(text):
+            code_found = text
+    return code_found, new_offset
+
+
 
 
 def _get_discord_config(config) -> tuple[str | None, str | None, bool]:

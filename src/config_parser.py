@@ -1019,6 +1019,23 @@ def get_telegram_chat_id(config: dict) -> str | None:
     return get_notification_config_value(config, "telegram", "chat_id")
 
 
+def get_telegram_listen_enabled(config: dict) -> bool:
+    """Whether to poll Telegram for inbound replies (2FA code + sync-now).
+
+    Opt-in (default False). When True, the sync loop polls Telegram's
+    ``getUpdates`` every ~30s during 2FA waits and accepts a 6-digit
+    code as a reply -- avoiding the trip to the web UI for the common
+    "I'm on my phone anyway" case.
+
+    Reuses ``app.notifications.telegram.bot_token`` / ``chat_id`` from
+    the existing outbound config; ``chat_id`` filtering means only
+    messages from the user's chat are honoured (no separate auth).
+    """
+    return bool(
+        get_notification_config_value(config, "telegram", "listen") or False,
+    )
+
+
 def get_discord_webhook_url(config: dict) -> str | None:
     """Return discord webhook_url from config.
 

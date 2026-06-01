@@ -511,7 +511,7 @@ def _send_usage_statistics(config, summary: SyncSummary) -> None:
     alive(config=config, data=usage_data)
 
 
-def _handle_2fa_required(config, username: str, sync_state: SyncState):
+def _handle_2fa_required(config, username: str, sync_state: SyncState, api=None):
     """
     Handle 2FA authentication requirement.
 
@@ -519,6 +519,13 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState):
         config: Configuration dictionary
         username: iCloud username
         sync_state: Current sync state
+        api: Live ICloudPyService instance still in requires_2fa state.
+            When provided AND ``app.notifications.telegram.listen`` is
+            true, the sleep gap is replaced with a polling loop that
+            accepts a 6-digit code reply from the configured Telegram
+            chat and feeds it to ``api.validate_2fa_code`` directly --
+            no trip to the web UI needed. Returns early on success so
+            the next outer-loop iteration finds the now-trusted session.
 
     Returns:
         bool: True if should continue (retry), False if should exit
@@ -539,8 +546,83 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState):
         region=server_region,
         dashboard_url=_resolve_dashboard_url(config),
     )
-    sleep(sleep_for)
+    if api is not None and config_parser.get_telegram_listen_enabled(config=config):
+        _wait_for_telegram_code(config=config, api=api, timeout_seconds=sleep_for)
+    else:
+        sleep(sleep_for)
     return True
+
+
+def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
+    """Poll Telegram for a 6-digit reply, feeding it to ``api.validate_2fa_code``.
+
+    Returns True if a code arrived AND validated AND trust succeeded
+    within ``timeout_seconds`` (caller can fast-path the next sync
+    attempt). Returns False if the timeout expires with no usable code.
+
+    Best-effort throughout: any Telegram or icloudpy exception is logged
+    and the loop continues until timeout, so a single bad poll or a
+    rejected code doesn't break the auth-retry cadence. Reuses the
+    existing ``notify.poll_telegram_for_code`` for the HTTP call, and
+    ``web_signals.{get,record}_telegram_offset`` for cross-restart
+    offset persistence.
+    """
+    poll_interval = 30
+    from src import web_signals
+
+    bot_token = config_parser.get_telegram_bot_token(config=config)
+    chat_id = config_parser.get_telegram_chat_id(config=config)
+    if not bot_token or not chat_id:
+        LOGGER.warning(
+            "Telegram listen enabled but bot_token/chat_id not configured; "
+            "falling back to plain sleep.",
+        )
+        sleep(timeout_seconds)
+        return False
+
+    LOGGER.info(
+        f"Listening on Telegram chat for 6-digit code (timeout {timeout_seconds}s).",
+    )
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        chunk = min(poll_interval, timeout_seconds - elapsed)
+        sleep(chunk)
+        elapsed += chunk
+        offset = web_signals.get_telegram_offset()
+        code, new_offset = notify.poll_telegram_for_code(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            offset=offset,
+        )
+        if new_offset != offset:
+            web_signals.record_telegram_offset(new_offset)
+        if code is None:
+            continue
+        LOGGER.info("Received 6-digit code via Telegram -- validating.")
+        try:
+            accepted = api.validate_2fa_code(code)
+        except Exception as e:
+            LOGGER.warning(
+                f"validate_2fa_code raised: {e!s} -- waiting for another code.",
+            )
+            continue
+        if not accepted:
+            LOGGER.warning(
+                "Apple rejected the Telegram-supplied code -- waiting for another.",
+            )
+            continue
+        # Code accepted. trust_session is best-effort; failure just means
+        # the next sync may need 2FA again sooner than expected.
+        try:
+            api.trust_session()
+        except Exception as e:
+            LOGGER.warning(f"trust_session raised (non-fatal): {e!s}")
+        LOGGER.info("Telegram-driven 2FA succeeded; resuming sync.")
+        return True
+    LOGGER.info(
+        "Telegram listen timeout reached with no usable code; retrying auth.",
+    )
+    return False
 
 
 def _handle_password_error(config, username: str, sync_state: SyncState):
@@ -841,7 +923,9 @@ def sync():
                             "Nothing to sync. Please add drive: and/or photos: section in config.yaml file.",
                         )
                 else:
-                    if not _handle_2fa_required(config, username, sync_state):
+                    # Pass the live api so the Telegram-listen path can
+                    # call validate_2fa_code on this exact session.
+                    if not _handle_2fa_required(config, username, sync_state, api=api):
                         break
                     continue
 

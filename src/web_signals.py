@@ -218,6 +218,36 @@ def get_trust_state() -> dict[str, Any]:
     return _load_state().get(_TRUST_STATE_KEY, {})
 
 
+_TELEGRAM_OFFSET_KEY = "_telegram"
+
+
+def record_telegram_offset(offset: int) -> None:
+    """Persist the most recent Telegram update_id we observed.
+
+    Stored under a reserved ``_telegram`` key (underscore prefix
+    distinguishes it from valid service names so ``get_sync_state``
+    keeps filtering correctly). Survives container restarts so the
+    next poll skips messages already processed -- without persistence
+    we'd re-process every message from the last 24h on every restart,
+    which would re-fire any stale 6-digit code reply.
+    """
+    state = _load_state()
+    entry = state.get(_TELEGRAM_OFFSET_KEY, {})
+    entry["offset"] = int(offset)
+    entry["last_updated"] = time.time()
+    state[_TELEGRAM_OFFSET_KEY] = entry
+    _save_state(state)
+
+
+def get_telegram_offset() -> int:
+    """Return the most recently persisted offset, or 0 if never set."""
+    entry = _load_state().get(_TELEGRAM_OFFSET_KEY) or {}
+    try:
+        return int(entry.get("offset") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def format_relative_time(epoch_seconds: float, *, now: float | None = None) -> str:
     """Human-friendly relative time for dashboard display.
 
