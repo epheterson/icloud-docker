@@ -266,6 +266,58 @@ def poll_telegram_for_code(
     return code_found, new_offset
 
 
+def poll_telegram_for_text(
+    bot_token: str,
+    chat_id: str,
+    offset: int = 0,
+    request_timeout: int = 10,
+) -> tuple[str | None, int]:
+    """Poll Telegram getUpdates for the NEXT text message from ``chat_id``.
+
+    Like ``poll_telegram_for_code`` but returns ANY stripped text (not just
+    6-digit codes), so the caller can also act on a trigger keyword. Returns
+    ``(text, new_offset)`` where ``new_offset`` is that message's update_id, so
+    the next poll continues to the following message -- important when a
+    keyword and the code arrive close together. Non-text / foreign-chat updates
+    are skipped and advance the offset past them. Failures return ``(None, offset)``.
+    """
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    params: dict[str, Any] = {
+        "offset": offset + 1,
+        "allowed_updates": '["message"]',
+        "timeout": 0,
+    }
+    try:
+        response = requests.post(url, params=params, timeout=request_timeout)
+    except (requests.RequestException, OSError) as e:
+        LOGGER.warning(f"telegram getUpdates failed: {e!s}")
+        return None, offset
+    if response.status_code != 200:
+        LOGGER.warning(
+            f"telegram getUpdates returned {response.status_code}: {response.text[:200]}",
+        )
+        return None, offset
+    try:
+        payload = response.json()
+    except ValueError as e:
+        LOGGER.warning(f"telegram getUpdates: malformed JSON: {e!s}")
+        return None, offset
+    updates = payload.get("result") or []
+    new_offset = offset
+    for update in updates:
+        update_id = update.get("update_id")
+        message = update.get("message") or {}
+        chat = message.get("chat") or {}
+        if str(chat.get("id")) != str(chat_id):
+            if isinstance(update_id, int) and update_id > new_offset:
+                new_offset = update_id
+            continue
+        text = (message.get("text") or "").strip()
+        if text:
+            return text, (update_id if isinstance(update_id, int) else new_offset)
+        if isinstance(update_id, int) and update_id > new_offset:
+            new_offset = update_id
+    return None, new_offset
 
 
 def _get_discord_config(config) -> tuple[str | None, str | None, bool]:
