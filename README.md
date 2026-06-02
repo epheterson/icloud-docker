@@ -84,6 +84,8 @@ app:
   telegram:
   # bot_token: <your Telegram bot token>
   # chat_id: <your Telegram user or chat ID>
+  # listen: true        # poll Telegram for replies to re-auth 2FA from your phone (off by default)
+  # auth_keyword: auth   # reply word that triggers the 2FA push (default "auth"; unique-per-container)
   pushover:
   # user_key: <your Pushover user key>
   # api_token: <your Pushover api token>
@@ -271,6 +273,11 @@ app:
 - Requires bot token and chat ID
 - Supports both private messages and group chats
 - Excellent mobile notification support
+- **2FA re-auth from your phone** (set `listen: true`): when iCloud trust lapses you get a
+  prompt in Telegram — reply the auth keyword (default `auth`) and a fresh 2FA code is
+  pushed to your trusted devices, then reply the 6-digit code to re-authenticate. No web UI
+  or `docker exec` needed. Running several containers in one chat? Give each a unique
+  `auth_keyword` + `notification_title` to target them individually.
 
 **Pushover**
 - Dedicated mobile notification service

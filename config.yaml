@@ -34,6 +34,12 @@ app:
   telegram:
   # bot_token: <your Telegram bot token>
   # chat_id: <your Telegram user or chat ID>
+  # listen: true        # also poll Telegram for replies so you can re-auth 2FA from your phone:
+  #                      # reply the auth keyword to get a fresh code pushed to your devices,
+  #                      # then reply the 6-digit code. Off by default.
+  # auth_keyword: auth   # reply word that triggers the 2FA push (default "auth", case-insensitive).
+  #                      # Use a unique word per container (e.g. auth-photos) + a distinct
+  #                      # notification_title to drive multiple containers from one chat.
   pushover:
   # user_key: <your Pushover user key>
   # api_token: <your Pushover api token>
