@@ -74,62 +74,60 @@ def _update(update_id, chat_id, text):
     }
 
 
-class TestPollTelegramForCode(unittest.TestCase):
-    """notify.poll_telegram_for_code: filtering, offset advancement, errors."""
+class TestPollTelegramForText(unittest.TestCase):
+    """notify.poll_telegram_for_text: returns next text, chat filter, offset, errors.
 
-    def test_returns_code_from_matching_chat(self):
+    The poller is intentionally dumb about content -- it returns the first text
+    message from the configured chat verbatim; the caller (sync) classifies it
+    as a trigger keyword vs a 6-digit code.
+    """
+
+    def test_returns_text_from_matching_chat(self):
         from src import notify
 
         with patch("src.notify.requests.post") as post:
             post.return_value = _telegram_response([_update(10, 12345, "123456")])
-            code, new_offset = notify.poll_telegram_for_code(
+            text, new_offset = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id="12345",
                 offset=0,
             )
-        self.assertEqual(code, "123456")
+        self.assertEqual(text, "123456")
         self.assertEqual(new_offset, 10)
 
-    def test_ignores_non_six_digit_messages(self):
+    def test_returns_any_text_not_just_digits(self):
+        """Non-digit text (e.g. the 'auth' trigger) is returned verbatim --
+        the caller decides what to do with it."""
         from src import notify
 
         with patch("src.notify.requests.post") as post:
-            post.return_value = _telegram_response(
-                [
-                    _update(5, 12345, "hello"),
-                    _update(6, 12345, "12345"),  # 5 digits
-                    _update(7, 12345, "1234567"),  # 7 digits
-                    _update(8, 12345, "12 3456"),  # space
-                ],
-            )
-            code, new_offset = notify.poll_telegram_for_code(
+            post.return_value = _telegram_response([_update(7, 12345, "AUTH")])
+            text, new_offset = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id="12345",
                 offset=0,
             )
-        self.assertIsNone(code)
-        # Offset still advances past all the noise so the next poll
-        # doesn't re-process them.
-        self.assertEqual(new_offset, 8)
+        self.assertEqual(text, "AUTH")
+        self.assertEqual(new_offset, 7)
 
     def test_ignores_messages_from_other_chats(self):
         """Critical security check: only the configured chat is honoured.
-        A different chat sending '123456' must NOT be accepted."""
+        A different chat's message must NOT be returned."""
         from src import notify
 
         with patch("src.notify.requests.post") as post:
             post.return_value = _telegram_response(
                 [
-                    _update(5, 99999, "123456"),  # wrong chat -- ignored
+                    _update(5, 99999, "123456"),  # wrong chat -- skipped
                     _update(6, 12345, "654321"),  # right chat
                 ],
             )
-            code, new_offset = notify.poll_telegram_for_code(
+            text, new_offset = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id="12345",
                 offset=0,
             )
-        self.assertEqual(code, "654321")
+        self.assertEqual(text, "654321")
         self.assertEqual(new_offset, 6)
 
     def test_chat_id_compares_as_string(self):
@@ -140,58 +138,88 @@ class TestPollTelegramForCode(unittest.TestCase):
         with patch("src.notify.requests.post") as post:
             post.return_value = _telegram_response([_update(5, 12345, "123456")])
             # Pass chat_id as int -- should still match
-            code, _ = notify.poll_telegram_for_code(
+            text, _ = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id=12345,
                 offset=0,
             )
-        self.assertEqual(code, "123456")
+        self.assertEqual(text, "123456")
 
-    def test_offset_is_advanced_past_consumed_code(self):
-        """When a code is found at update_id=N, offset advances to N so
-        the next poll's offset+1=N+1 skips this code on re-poll."""
+    def test_offset_is_the_returned_message_id(self):
+        """Offset advances to the RETURNED message's id (not the highest),
+        so the next poll continues to the following message -- important when
+        a keyword and the code arrive in the same batch."""
         from src import notify
 
         with patch("src.notify.requests.post") as post:
-            post.return_value = _telegram_response([_update(42, 12345, "111111")])
-            _, new_offset = notify.poll_telegram_for_code(
+            post.return_value = _telegram_response([_update(42, 12345, "auth")])
+            _, new_offset = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id="12345",
                 offset=0,
             )
         self.assertEqual(new_offset, 42)
 
-    def test_first_matching_code_wins_when_multiple(self):
-        """If multiple codes arrive in one poll, the first (lowest
-        update_id) is the one validated; later codes get walked past
-        (offset advances) but aren't returned."""
+    def test_first_text_wins_and_stops(self):
+        """First text is returned + offset stops at it, so a following message
+        (e.g. the code after the keyword) is read on the next poll, not skipped."""
         from src import notify
 
         with patch("src.notify.requests.post") as post:
             post.return_value = _telegram_response(
                 [
-                    _update(1, 12345, "111111"),
-                    _update(2, 12345, "222222"),
+                    _update(1, 12345, "auth"),
+                    _update(2, 12345, "111111"),
                 ],
             )
-            code, new_offset = notify.poll_telegram_for_code(
+            text, new_offset = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id="12345",
                 offset=0,
             )
-        self.assertEqual(code, "111111")
-        self.assertEqual(new_offset, 2)  # offset still advances past the second
+        self.assertEqual(text, "auth")
+        self.assertEqual(new_offset, 1)  # stops here; next poll gets "111111"
+
+    def test_no_text_advances_offset_past_noise(self):
+        """Foreign-chat / non-text updates yield no text but advance the
+        offset past them so they aren't re-processed."""
+        from src import notify
+
+        with patch("src.notify.requests.post") as post:
+            post.return_value = _telegram_response([_update(8, 99999, "spam")])
+            text, new_offset = notify.poll_telegram_for_text(
+                bot_token="bot-x",
+                chat_id="12345",
+                offset=0,
+            )
+        self.assertIsNone(text)
+        self.assertEqual(new_offset, 8)
+
+    def test_skips_non_text_message_from_our_chat(self):
+        """A non-text message (e.g. a photo) from our own chat yields no text
+        but still advances the offset so it isn't re-processed next poll."""
+        from src import notify
+
+        with patch("src.notify.requests.post") as post:
+            post.return_value = _telegram_response([_update(9, 12345, "")])
+            text, new_offset = notify.poll_telegram_for_text(
+                bot_token="bot-x",
+                chat_id="12345",
+                offset=0,
+            )
+        self.assertIsNone(text)
+        self.assertEqual(new_offset, 9)
 
     def test_network_error_returns_unchanged_offset(self):
         from src import notify
 
         with patch("src.notify.requests.post", side_effect=OSError("network down")):
-            code, new_offset = notify.poll_telegram_for_code(
+            text, new_offset = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id="12345",
                 offset=15,
             )
-        self.assertIsNone(code)
+        self.assertIsNone(text)
         self.assertEqual(new_offset, 15)
 
     def test_non_200_response_returns_unchanged_offset(self):
@@ -201,12 +229,12 @@ class TestPollTelegramForCode(unittest.TestCase):
         bad.status_code = 401
         bad.text = "Unauthorized"
         with patch("src.notify.requests.post", return_value=bad):
-            code, new_offset = notify.poll_telegram_for_code(
+            text, new_offset = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id="12345",
                 offset=15,
             )
-        self.assertIsNone(code)
+        self.assertIsNone(text)
         self.assertEqual(new_offset, 15)
 
     def test_malformed_json_returns_unchanged_offset(self):
@@ -216,12 +244,12 @@ class TestPollTelegramForCode(unittest.TestCase):
         resp.status_code = 200
         resp.json.side_effect = ValueError("not json")
         with patch("src.notify.requests.post", return_value=resp):
-            code, new_offset = notify.poll_telegram_for_code(
+            text, new_offset = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id="12345",
                 offset=15,
             )
-        self.assertIsNone(code)
+        self.assertIsNone(text)
         self.assertEqual(new_offset, 15)
 
     def test_empty_result_returns_unchanged_offset(self):
@@ -229,12 +257,12 @@ class TestPollTelegramForCode(unittest.TestCase):
 
         with patch("src.notify.requests.post") as post:
             post.return_value = _telegram_response([])
-            code, new_offset = notify.poll_telegram_for_code(
+            text, new_offset = notify.poll_telegram_for_text(
                 bot_token="bot-x",
                 chat_id="12345",
                 offset=15,
             )
-        self.assertIsNone(code)
+        self.assertIsNone(text)
         self.assertEqual(new_offset, 15)
 
 
@@ -281,9 +309,13 @@ class TestWaitForTelegramCode(unittest.TestCase):
     """sync._wait_for_telegram_code: poll loop, validate, trust."""
 
     def setUp(self):
-        from src import web_signals
+        from src import sync, web_signals
 
         web_signals.record_telegram_offset(0)
+        # Mock the outbound messenger so the loop never hits the network in tests.
+        tg = patch.object(sync, "_send_telegram_message")
+        tg.start()
+        self.addCleanup(tg.stop)
 
     def _api(self):
         api = MagicMock()
@@ -419,6 +451,93 @@ class TestWaitForTelegramCode(unittest.TestCase):
                 timeout_seconds=30,
             )
         self.assertEqual(web_signals.get_telegram_offset(), 99)
+
+    def test_auth_keyword_triggers_2fa_push(self):
+        """Replying 'auth' fires trigger_2fa_push_notification (so Apple
+        actually pushes a code); a following 6-digit reply then validates."""
+        from src import notify, sync
+
+        api = self._api()
+        with (
+            patch.object(
+                notify,
+                "poll_telegram_for_text",
+                side_effect=[("auth", 1), ("123456", 2)],
+            ),
+            patch("src.sync.sleep"),
+        ):
+            result = sync._wait_for_telegram_code(  # noqa: SLF001
+                config=_telegram_config(),
+                api=api,
+                timeout_seconds=120,
+            )
+        self.assertTrue(result)
+        api.trigger_2fa_push_notification.assert_called_once()
+        api.validate_2fa_code.assert_called_once_with("123456")
+
+    def test_custom_auth_keyword_is_honoured(self):
+        """A configured app.telegram.auth_keyword triggers the push, matched
+        case-insensitively (multi-container disambiguation)."""
+        from src import notify, sync
+
+        api = self._api()
+        config = _telegram_config()
+        config["app"]["telegram"]["auth_keyword"] = "auth-photos"
+        with (
+            patch.object(
+                notify,
+                "poll_telegram_for_text",
+                side_effect=[("Auth-Photos", 1), ("123456", 2)],
+            ),
+            patch("src.sync.sleep"),
+        ):
+            result = sync._wait_for_telegram_code(  # noqa: SLF001
+                config=config,
+                api=api,
+                timeout_seconds=120,
+            )
+        self.assertTrue(result)
+        api.trigger_2fa_push_notification.assert_called_once()
+
+    def test_auth_trigger_push_failure_is_non_fatal(self):
+        """If trigger_2fa_push_notification raises, the loop logs it and keeps
+        listening -- a later valid code still completes the re-auth."""
+        from src import notify, sync
+
+        api = self._api()
+        api.trigger_2fa_push_notification.side_effect = RuntimeError("apple flake")
+        with (
+            patch.object(
+                notify,
+                "poll_telegram_for_text",
+                side_effect=[("auth", 1), ("123456", 2)],
+            ),
+            patch("src.sync.sleep"),
+        ):
+            result = sync._wait_for_telegram_code(  # noqa: SLF001
+                config=_telegram_config(),
+                api=api,
+                timeout_seconds=120,
+            )
+        self.assertTrue(result)
+
+
+class TestSendTelegramMessage(unittest.TestCase):
+    """sync._send_telegram_message: best-effort, never raises."""
+
+    def test_swallows_network_errors(self):
+        from src import sync
+
+        with patch("src.sync.requests.post", side_effect=OSError("down")):
+            sync._send_telegram_message("bot-x", "12345", "hi")  # noqa: SLF001
+
+    def test_posts_to_sendmessage_endpoint(self):
+        from src import sync
+
+        with patch("src.sync.requests.post") as post:
+            sync._send_telegram_message("bot-x", "12345", "hi")  # noqa: SLF001
+        post.assert_called_once()
+        self.assertIn("/botbot-x/sendMessage", post.call_args[0][0])
 
 
 class TestHandle2faRequiredPassesApi(unittest.TestCase):

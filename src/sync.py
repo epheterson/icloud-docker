@@ -3,8 +3,10 @@
 __author__ = "Mandar Patil <mandarons@pm.me>"
 import datetime
 import os
+import re
 from time import sleep
 
+import requests
 from icloudpy import ICloudPyService, exceptions, utils
 
 from src import (
@@ -555,8 +557,6 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState, api=None)
 
 def _send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
     """Best-effort one-off Telegram message (instructions / confirmations)."""
-    import requests
-
     try:
         requests.post(
             f"https://api.telegram.org/bot{bot_token}/sendMessage",
@@ -581,10 +581,9 @@ def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
     Returns True once a code validates + trust succeeds within ``timeout_seconds``;
     False on timeout. Best-effort throughout. Offset persisted via web_signals.
     """
-    import re as _re
+    from src import web_signals
 
     poll_interval = 15
-    from src import web_signals
 
     bot_token = config_parser.get_telegram_bot_token(config=config)
     chat_id = config_parser.get_telegram_chat_id(config=config)
@@ -641,7 +640,7 @@ def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
                 ),
             )
             continue
-        if _re.fullmatch(r"\d{6}", norm):
+        if re.fullmatch(r"\d{6}", norm):
             LOGGER.info("Received 6-digit code via Telegram -- validating.")
             try:
                 accepted = api.validate_2fa_code(norm)
