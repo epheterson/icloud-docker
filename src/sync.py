@@ -553,25 +553,42 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState, api=None)
     return True
 
 
+def _send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
+    """Best-effort one-off Telegram message (instructions / confirmations)."""
+    import requests
+
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            data={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning(f"telegram sendMessage failed: {e!s}")
+
+
 def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
-    """Poll Telegram for a 6-digit reply, feeding it to ``api.validate_2fa_code``.
+    """Drive 2FA over Telegram with a MANUAL trigger (nothing auto-fires).
 
-    Returns True if a code arrived AND validated AND trust succeeded
-    within ``timeout_seconds`` (caller can fast-path the next sync
-    attempt). Returns False if the timeout expires with no usable code.
+    Flow -- the user initiates each step:
+      1. Prompt the user to reply ``auth``.
+      2. On ``auth`` (case-insensitive) -> ``api.trigger_2fa_push_notification()``
+         so Apple actually pushes a code to the trusted devices, then ask for the
+         6 digits. (The headless path previously listened for a code it never
+         requested -- this is the missing trigger.)
+      3. On a 6-digit reply -> ``validate_2fa_code`` + ``trust_session``.
 
-    Best-effort throughout: any Telegram or icloudpy exception is logged
-    and the loop continues until timeout, so a single bad poll or a
-    rejected code doesn't break the auth-retry cadence. Reuses the
-    existing ``notify.poll_telegram_for_code`` for the HTTP call, and
-    ``web_signals.{get,record}_telegram_offset`` for cross-restart
-    offset persistence.
+    Returns True once a code validates + trust succeeds within ``timeout_seconds``;
+    False on timeout. Best-effort throughout. Offset persisted via web_signals.
     """
-    poll_interval = 30
+    import re as _re
+
+    poll_interval = 15
     from src import web_signals
 
     bot_token = config_parser.get_telegram_bot_token(config=config)
     chat_id = config_parser.get_telegram_chat_id(config=config)
+    auth_keyword = config_parser.get_telegram_auth_keyword(config=config)
     if not bot_token or not chat_id:
         LOGGER.warning(
             "Telegram listen enabled but bot_token/chat_id not configured; "
@@ -580,8 +597,15 @@ def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
         sleep(timeout_seconds)
         return False
 
+    _send_telegram_message(
+        bot_token,
+        chat_id,
+        f"🔐 iCloud needs re-authentication. Reply '{auth_keyword}' and I'll send a 2FA "
+        "code to your Apple devices; then reply the 6-digit code here.",
+    )
     LOGGER.info(
-        f"Listening on Telegram chat for 6-digit code (timeout {timeout_seconds}s).",
+        f"Listening on Telegram for '{auth_keyword}' trigger or 6-digit code "
+        f"(timeout {timeout_seconds}s).",
     )
     elapsed = 0
     while elapsed < timeout_seconds:
@@ -589,36 +613,64 @@ def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
         sleep(chunk)
         elapsed += chunk
         offset = web_signals.get_telegram_offset()
-        code, new_offset = notify.poll_telegram_for_code(
+        text, new_offset = notify.poll_telegram_for_text(
             bot_token=bot_token,
             chat_id=chat_id,
             offset=offset,
         )
         if new_offset != offset:
             web_signals.record_telegram_offset(new_offset)
-        if code is None:
+        if not text:
             continue
-        LOGGER.info("Received 6-digit code via Telegram -- validating.")
-        try:
-            accepted = api.validate_2fa_code(code)
-        except Exception as e:
-            LOGGER.warning(
-                f"validate_2fa_code raised: {e!s} -- waiting for another code.",
+        norm = text.strip().lower()
+        if norm == auth_keyword:
+            LOGGER.info("Telegram auth trigger received -- requesting 2FA push.")
+            try:
+                pushed = api.trigger_2fa_push_notification()
+            except Exception as e:  # noqa: BLE001
+                LOGGER.warning(f"trigger_2fa_push_notification raised: {e!s}")
+                pushed = False
+            _send_telegram_message(
+                bot_token,
+                chat_id,
+                (
+                    "✅ 2FA code sent to your Apple devices -- reply the 6-digit code here."
+                    if pushed
+                    else "⚠️ Couldn't request a code (no trusted device, or auth state off). "
+                    "Try icloud.zosia.io/auth."
+                ),
             )
             continue
-        if not accepted:
-            LOGGER.warning(
-                "Apple rejected the Telegram-supplied code -- waiting for another.",
+        if _re.fullmatch(r"\d{6}", norm):
+            LOGGER.info("Received 6-digit code via Telegram -- validating.")
+            try:
+                accepted = api.validate_2fa_code(norm)
+            except Exception as e:  # noqa: BLE001
+                LOGGER.warning(
+                    f"validate_2fa_code raised: {e!s} -- waiting for another code.",
+                )
+                continue
+            if not accepted:
+                _send_telegram_message(
+                    bot_token,
+                    chat_id,
+                    "❌ Apple rejected that code -- reply a fresh one.",
+                )
+                LOGGER.warning(
+                    "Apple rejected the Telegram-supplied code -- waiting for another.",
+                )
+                continue
+            try:
+                api.trust_session()
+            except Exception as e:  # noqa: BLE001
+                LOGGER.warning(f"trust_session raised (non-fatal): {e!s}")
+            _send_telegram_message(
+                bot_token,
+                chat_id,
+                "✅ Re-authenticated. iCloud sync resumed.",
             )
-            continue
-        # Code accepted. trust_session is best-effort; failure just means
-        # the next sync may need 2FA again sooner than expected.
-        try:
-            api.trust_session()
-        except Exception as e:
-            LOGGER.warning(f"trust_session raised (non-fatal): {e!s}")
-        LOGGER.info("Telegram-driven 2FA succeeded; resuming sync.")
-        return True
+            LOGGER.info("Telegram-driven 2FA succeeded; resuming sync.")
+            return True
     LOGGER.info(
         "Telegram listen timeout reached with no usable code; retrying auth.",
     )

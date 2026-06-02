@@ -1082,6 +1082,18 @@ def get_telegram_listen_enabled(config: dict) -> bool:
     )
 
 
+def get_telegram_auth_keyword(config: dict) -> str:
+    """The reply keyword that triggers a 2FA push (default ``auth``).
+
+    Customisable via ``app.telegram.auth_keyword`` so users running multiple
+    containers in one chat can target a specific one (e.g. ``auth-photos``).
+    Pairs with ``app.notification_title`` for per-container disambiguation.
+    Matched case-insensitively. Returns the lowercased keyword.
+    """
+    value = get_notification_config_value(config, "telegram", "auth_keyword")
+    return str(value).strip().lower() if value else "auth"
+
+
 def get_discord_webhook_url(config: dict) -> str | None:
     """Return discord webhook_url from config.
 
