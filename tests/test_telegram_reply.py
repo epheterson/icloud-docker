@@ -295,7 +295,7 @@ class TestWaitForTelegramCode(unittest.TestCase):
 
         api = self._api()
         with (
-            patch.object(notify, "poll_telegram_for_code", return_value=("123456", 5)),
+            patch.object(notify, "poll_telegram_for_text", return_value=("123456", 5)),
             patch("src.sync.sleep"),  # zero the wait
         ):
             result = sync._wait_for_telegram_code(  # noqa: SLF001
@@ -312,7 +312,7 @@ class TestWaitForTelegramCode(unittest.TestCase):
 
         api = self._api()
         with (
-            patch.object(notify, "poll_telegram_for_code", return_value=(None, 0)),
+            patch.object(notify, "poll_telegram_for_text", return_value=(None, 0)),
             patch("src.sync.sleep"),
         ):
             result = sync._wait_for_telegram_code(  # noqa: SLF001
@@ -333,7 +333,7 @@ class TestWaitForTelegramCode(unittest.TestCase):
         with (
             patch.object(
                 notify,
-                "poll_telegram_for_code",
+                "poll_telegram_for_text",
                 side_effect=[("111111", 1), ("222222", 2)],
             ),
             patch("src.sync.sleep"),
@@ -356,7 +356,7 @@ class TestWaitForTelegramCode(unittest.TestCase):
         with (
             patch.object(
                 notify,
-                "poll_telegram_for_code",
+                "poll_telegram_for_text",
                 side_effect=[("111111", 1), ("222222", 2)],
             ),
             patch("src.sync.sleep"),
@@ -376,7 +376,7 @@ class TestWaitForTelegramCode(unittest.TestCase):
         api = self._api()
         api.trust_session.side_effect = RuntimeError("cookie write failed")
         with (
-            patch.object(notify, "poll_telegram_for_code", return_value=("123456", 5)),
+            patch.object(notify, "poll_telegram_for_text", return_value=("123456", 5)),
             patch("src.sync.sleep"),
         ):
             result = sync._wait_for_telegram_code(  # noqa: SLF001
@@ -410,7 +410,7 @@ class TestWaitForTelegramCode(unittest.TestCase):
 
         api = self._api()
         with (
-            patch.object(notify, "poll_telegram_for_code", return_value=("123456", 99)),
+            patch.object(notify, "poll_telegram_for_text", return_value=("123456", 99)),
             patch("src.sync.sleep"),
         ):
             sync._wait_for_telegram_code(  # noqa: SLF001
