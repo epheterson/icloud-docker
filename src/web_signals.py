@@ -162,7 +162,7 @@ def record_sync_completion(
     _save_state(state)
 
 
-def format_bytes(n: int | float | None) -> str:
+def format_bytes(n: float | None) -> str:
     """Compact human-friendly bytes formatting for the dashboard.
 
     "0", "512 B", "12.4 KB", "3.2 MB", "1.8 GB". Uses base-1024 (KB,
@@ -233,6 +233,68 @@ def _save_state(state: dict[str, dict[str, Any]]) -> None:
             os.unlink(tmp)
         except OSError:
             pass
+
+
+_TRUST_STATE_KEY = "_trust"
+
+
+def record_trust_state(
+    *,
+    expires_at_iso: str | None,
+    warned_for_expires_at: str | None = None,
+) -> None:
+    """Persist Apple trust-cookie expiry + whether we've warned for it.
+
+    Stored under a reserved ``_trust`` key in the same JSON file as
+    per-service sync state. ``warned_for_expires_at`` carries the iso
+    timestamp the most recent threshold-cross warning was fired for, so
+    a cookie refresh (new expires_at) automatically rearms warning
+    eligibility -- compare ``warned_for_expires_at`` against the live
+    ``expires_at_iso`` to decide whether to fire again.
+    """
+    state = _load_state()
+    entry = state.get(_TRUST_STATE_KEY, {})
+    entry["expires_at"] = expires_at_iso
+    entry["last_updated"] = time.time()
+    if warned_for_expires_at is not None:
+        entry["warned_for_expires_at"] = warned_for_expires_at
+    state[_TRUST_STATE_KEY] = entry
+    _save_state(state)
+
+
+def get_trust_state() -> dict[str, Any]:
+    """Return persisted trust state. Empty dict if never recorded."""
+    return _load_state().get(_TRUST_STATE_KEY, {})
+
+
+_TELEGRAM_OFFSET_KEY = "_telegram"
+
+
+def record_telegram_offset(offset: int) -> None:
+    """Persist the most recent Telegram update_id we observed.
+
+    Stored under a reserved ``_telegram`` key (underscore prefix
+    distinguishes it from valid service names so ``get_sync_state``
+    keeps filtering correctly). Survives container restarts so the
+    next poll skips messages already processed -- without persistence
+    we'd re-process every message from the last 24h on every restart,
+    which would re-fire any stale 6-digit code reply.
+    """
+    state = _load_state()
+    entry = state.get(_TELEGRAM_OFFSET_KEY, {})
+    entry["offset"] = int(offset)
+    entry["last_updated"] = time.time()
+    state[_TELEGRAM_OFFSET_KEY] = entry
+    _save_state(state)
+
+
+def get_telegram_offset() -> int:
+    """Return the most recently persisted offset, or 0 if never set."""
+    entry = _load_state().get(_TELEGRAM_OFFSET_KEY) or {}
+    try:
+        return int(entry.get("offset") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def format_relative_time(epoch_seconds: float, *, now: float | None = None) -> str:

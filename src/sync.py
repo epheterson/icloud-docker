@@ -9,7 +9,6 @@ from icloudpy import ICloudPyService, exceptions, utils
 
 from src import (
     DEFAULT_CONFIG_FILE_PATH,
-    DEFAULT_COOKIE_DIRECTORY,
     ENV_CONFIG_FILE_PATH_KEY,
     ENV_ICLOUD_PASSWORD_KEY,
     config_parser,
@@ -27,6 +26,113 @@ from src.usage import alive
 configure_icloudpy_logging()
 
 LOGGER = get_logger()
+
+
+_TRUST_COOKIE_NAME = "X-APPLE-WEBAUTH-HSA-TRUST"
+
+
+def _read_trust_cookie_expiry(api) -> datetime.datetime | None:
+    """Return the expiry datetime of Apple's HSA trust cookie, or None.
+
+    The trust window is carried by ``X-APPLE-WEBAUTH-HSA-TRUST`` in
+    icloudpy's cookie jar (persisted to ``session_data/<username>`` as
+    LWPCookieJar). Reading it directly avoids hardcoding Apple's trust
+    duration -- the cookie's own ``expires`` field is the source of
+    truth, set per-cookie by Apple's server. Returns None if the cookie
+    isn't present (e.g. account never auth'd with 2FA, or trust cookie
+    cleared).
+    """
+    try:
+        cookies = api.session.cookies
+    except AttributeError:
+        return None
+    for cookie in cookies:
+        if cookie.name == _TRUST_COOKIE_NAME and cookie.expires:
+            return datetime.datetime.fromtimestamp(
+                cookie.expires,
+                tz=datetime.timezone.utc,
+            )
+    return None
+
+
+def _resolve_dashboard_url(config) -> str | None:
+    """Compute the web UI URL to embed in notifications, or None.
+
+    Returns ``None`` when ``app.web_ui.enabled`` is False -- callers
+    fall back to the legacy docker-exec instruction. Otherwise prefers
+    the explicit ``app.web_ui.public_url`` (e.g. the reverse-proxy
+    URL); falls back to ``http://{host}:{port}`` with a warning logged
+    once at startup if the public URL isn't set.
+    """
+    if not config_parser.get_web_ui_enabled(config=config):
+        return None
+    public_url = config_parser.get_web_ui_public_url(config=config)
+    if public_url:
+        return public_url
+    host = config_parser.get_web_ui_host(config=config)
+    port = config_parser.get_web_ui_port(config=config)
+    # 0.0.0.0 / :: are bind-all addresses (what the server listens on), not
+    # browsable destinations — surface loopback in the user-facing URL instead.
+    if host in ("0.0.0.0", "::", ""):
+        host = "127.0.0.1"
+    LOGGER.warning(
+        "app.web_ui.public_url not set -- notification URLs will use "
+        "http://%s:%s/, which won't work from outside the container. "
+        "Set app.web_ui.public_url to your reverse-proxy URL.",
+        host,
+        port,
+    )
+    return f"http://{host}:{port}"
+
+
+def _maybe_warn_trust_expiring(config, api, username: str) -> None:
+    """Fire the trust-expiring notification once when crossing threshold.
+
+    Reads the live trust cookie expiry, compares against
+    ``app.trust_expiry_warn_days``, and -- if days_remaining is below
+    the threshold AND we haven't already warned for THIS cookie value --
+    fans the warning out through ``notify.send_trust_expiring``.
+
+    Debounce key is the cookie expiry ISO string itself. When Apple
+    refreshes the trust cookie (new expires_at), the stored
+    ``warned_for_expires_at`` no longer matches and warning eligibility
+    rearms automatically -- no manual reset needed.
+
+    Best-effort: any exception is logged and swallowed so a notification
+    bug never breaks the sync loop.
+    """
+    try:
+        from src import notify, web_signals
+
+        expires_at = _read_trust_cookie_expiry(api)
+        expires_at_iso = expires_at.isoformat() if expires_at else None
+        prior = web_signals.get_trust_state()
+        web_signals.record_trust_state(
+            expires_at_iso=expires_at_iso,
+            warned_for_expires_at=prior.get("warned_for_expires_at"),
+        )
+        if expires_at is None:
+            return
+        days_remaining = (
+            expires_at - datetime.datetime.now(tz=datetime.timezone.utc)
+        ).days
+        threshold = config_parser.get_trust_expiry_warn_days(config=config)
+        if days_remaining >= threshold:
+            return
+        if prior.get("warned_for_expires_at") == expires_at_iso:
+            return  # already warned for this cookie value
+        notify.send_trust_expiring(
+            config=config,
+            username=username,
+            days_remaining=days_remaining,
+            dashboard_url=_resolve_dashboard_url(config),
+        )
+        web_signals.record_trust_state(
+            expires_at_iso=expires_at_iso,
+            warned_for_expires_at=expires_at_iso,
+        )
+    except Exception as e:  # pragma: no cover - guarded so notify bugs don't break sync
+        LOGGER.warning(f"trust-expiring check failed: {e!s}")
 
 
 def get_api_instance(
@@ -120,11 +226,13 @@ def _extract_sync_intervals(config, log_messages: bool = False):
 
     if config and "drive" in config:
         drive_sync_interval = config_parser.get_drive_sync_interval(
-            config=config, log_messages=log_messages
+            config=config,
+            log_messages=log_messages,
         )
     if config and "photos" in config:
         photos_sync_interval = config_parser.get_photos_sync_interval(
-            config=config, log_messages=log_messages
+            config=config,
+            log_messages=log_messages,
         )
 
     return drive_sync_interval, photos_sync_interval
@@ -168,12 +276,17 @@ def _authenticate_and_get_api(config, username: str):
     server_region = config_parser.get_region(config=config)
     password = _retrieve_password(username)
     return get_api_instance(
-        username=username, password=password, server_region=server_region
+        username=username,
+        password=password,
+        server_region=server_region,
     )
 
 
 def _check_mount_marker(
-    destination_path: str, marker_filename: str, required: bool, service_name: str
+    destination_path: str,
+    marker_filename: str,
+    required: bool,
+    service_name: str,
 ) -> bool:
     """Verify the failsafe marker file is present in a destination directory.
 
@@ -370,11 +483,13 @@ def _perform_photos_sync(config, api, sync_state: SyncState, photos_sync_interva
 
         # Estimate hardlinked photos (approximate)
         use_hardlinks = config_parser.get_photos_use_hardlinks(
-            config=config, log_messages=False
+            config=config,
+            log_messages=False,
         )
         if use_hardlinks:
             stats.photos_hardlinked = max(
-                0, len(files_after) - len(files_before) - stats.photos_downloaded
+                0,
+                len(files_after) - len(files_before) - stats.photos_downloaded,
             )
 
         # Count skipped photos
@@ -455,13 +570,13 @@ def _perform_dry_run(config, api, check_files: int | None = None) -> None:
             LOGGER.warning(f"DRY RUN: Drive enumeration failed: {e!s}")
     else:
         LOGGER.info(
-            "DRY RUN: no `drive:` section in config — Drive sync would be skipped."
+            "DRY RUN: no `drive:` section in config — Drive sync would be skipped.",
         )
 
     if config and "photos" in config:
         try:
             photos_destination = config_parser.get_photos_destination_path(
-                config=config
+                config=config,
             )
             LOGGER.info(f"DRY RUN: Photos destination: {photos_destination}")
             libraries = (
@@ -471,7 +586,7 @@ def _perform_dry_run(config, api, check_files: int | None = None) -> None:
             )
             if libraries:
                 LOGGER.info(
-                    f"DRY RUN: Photos libraries available: {', '.join(libraries)}"
+                    f"DRY RUN: Photos libraries available: {', '.join(libraries)}",
                 )
             else:
                 LOGGER.info("DRY RUN: Photos libraries: (none reported by iCloud)")
@@ -479,7 +594,7 @@ def _perform_dry_run(config, api, check_files: int | None = None) -> None:
             LOGGER.warning(f"DRY RUN: Photos enumeration failed: {e!s}")
     else:
         LOGGER.info(
-            "DRY RUN: no `photos:` section in config — Photos sync would be skipped."
+            "DRY RUN: no `photos:` section in config — Photos sync would be skipped.",
         )
 
     if check_files is not None:
@@ -494,7 +609,9 @@ def _perform_dry_run(config, api, check_files: int | None = None) -> None:
                     f"(--check-files={'all' if check_files == 0 else check_files} per library) ...",
                 )
                 results = migration_check.check_migration(
-                    api=api, config=config, sample=check_files
+                    api=api,
+                    config=config,
+                    sample=check_files,
                 )
                 for library_name, result in results.items():
                     stats = result["stats"]
@@ -511,12 +628,12 @@ def _perform_dry_run(config, api, check_files: int | None = None) -> None:
                             if status == "size_mismatch":
                                 path, expected, actual = item
                                 LOGGER.info(
-                                    f"DRY RUN:   sample {status}: {path} (have {actual:,}b, want {expected:,}b)"
+                                    f"DRY RUN:   sample {status}: {path} (have {actual:,}b, want {expected:,}b)",
                                 )
                             else:
                                 path, expected = item
                                 LOGGER.info(
-                                    f"DRY RUN:   sample {status}: {path} ({expected:,}b)"
+                                    f"DRY RUN:   sample {status}: {path} ({expected:,}b)",
                                 )
             except Exception as e:
                 LOGGER.warning(f"DRY RUN: photos check-files walk failed: {e!s}")
@@ -527,7 +644,9 @@ def _perform_dry_run(config, api, check_files: int | None = None) -> None:
         if config and "drive" in config:
             try:
                 drive_result = migration_check.check_drive_migration(
-                    api=api, config=config, sample=check_files
+                    api=api,
+                    config=config,
+                    sample=check_files,
                 )
                 if drive_result is not None:
                     stats = drive_result["stats"]
@@ -544,18 +663,18 @@ def _perform_dry_run(config, api, check_files: int | None = None) -> None:
                             if status == "size_mismatch":
                                 path, expected, actual = item
                                 LOGGER.info(
-                                    f"DRY RUN:   sample {status}: {path} (have {actual:,}b, want {expected:,}b)"
+                                    f"DRY RUN:   sample {status}: {path} (have {actual:,}b, want {expected:,}b)",
                                 )
                             else:
                                 path, expected = item
                                 LOGGER.info(
-                                    f"DRY RUN:   sample {status}: {path} ({expected:,}b)"
+                                    f"DRY RUN:   sample {status}: {path} ({expected:,}b)",
                                 )
             except Exception as e:
                 LOGGER.warning(f"DRY RUN: drive check-files walk failed: {e!s}")
 
     LOGGER.info(
-        "DRY RUN complete — no files were written. Re-run without --dry-run to sync."
+        "DRY RUN complete — no files were written. Re-run without --dry-run to sync.",
     )
 
 
@@ -589,10 +708,10 @@ def _send_usage_statistics(config, summary: SyncSummary) -> None:
             else 0
         ),
         "has_drive_activity": bool(
-            summary.drive_stats and summary.drive_stats.has_activity()
+            summary.drive_stats and summary.drive_stats.has_activity(),
         ),
         "has_photos_activity": bool(
-            summary.photo_stats and summary.photo_stats.has_activity()
+            summary.photo_stats and summary.photo_stats.has_activity(),
         ),
         "has_errors": summary.has_errors(),
         "timestamp": (
@@ -620,7 +739,7 @@ def _send_usage_statistics(config, summary: SyncSummary) -> None:
     alive(config=config, data=usage_data)
 
 
-def _handle_2fa_required(config, username: str, sync_state: SyncState):
+def _handle_2fa_required(config, username: str, sync_state: SyncState, api=None):
     """
     Handle 2FA authentication requirement.
 
@@ -628,6 +747,13 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState):
         config: Configuration dictionary
         username: iCloud username
         sync_state: Current sync state
+        api: Live ICloudPyService instance still in requires_2fa state.
+            When provided AND ``app.notifications.telegram.listen`` is
+            true, the sleep gap is replaced with a polling loop that
+            accepts a 6-digit code reply from the configured Telegram
+            chat and feeds it to ``api.validate_2fa_code`` directly --
+            no trip to the web UI needed. Returns early on success so
+            the next outer-loop iteration finds the now-trusted session.
 
     Returns:
         bool: True if should continue (retry), False if should exit
@@ -646,9 +772,85 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState):
         username=username,
         last_send=sync_state.last_send,
         region=server_region,
+        dashboard_url=_resolve_dashboard_url(config),
     )
-    sleep(sleep_for)
+    if api is not None and config_parser.get_telegram_listen_enabled(config=config):
+        _wait_for_telegram_code(config=config, api=api, timeout_seconds=sleep_for)
+    else:
+        sleep(sleep_for)
     return True
+
+
+def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
+    """Poll Telegram for a 6-digit reply, feeding it to ``api.validate_2fa_code``.
+
+    Returns True if a code arrived AND validated AND trust succeeded
+    within ``timeout_seconds`` (caller can fast-path the next sync
+    attempt). Returns False if the timeout expires with no usable code.
+
+    Best-effort throughout: any Telegram or icloudpy exception is logged
+    and the loop continues until timeout, so a single bad poll or a
+    rejected code doesn't break the auth-retry cadence. Reuses the
+    existing ``notify.poll_telegram_for_code`` for the HTTP call, and
+    ``web_signals.{get,record}_telegram_offset`` for cross-restart
+    offset persistence.
+    """
+    poll_interval = 30
+    from src import web_signals
+
+    bot_token = config_parser.get_telegram_bot_token(config=config)
+    chat_id = config_parser.get_telegram_chat_id(config=config)
+    if not bot_token or not chat_id:
+        LOGGER.warning(
+            "Telegram listen enabled but bot_token/chat_id not configured; "
+            "falling back to plain sleep.",
+        )
+        sleep(timeout_seconds)
+        return False
+
+    LOGGER.info(
+        f"Listening on Telegram chat for 6-digit code (timeout {timeout_seconds}s).",
+    )
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        chunk = min(poll_interval, timeout_seconds - elapsed)
+        sleep(chunk)
+        elapsed += chunk
+        offset = web_signals.get_telegram_offset()
+        code, new_offset = notify.poll_telegram_for_code(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            offset=offset,
+        )
+        if new_offset != offset:
+            web_signals.record_telegram_offset(new_offset)
+        if code is None:
+            continue
+        LOGGER.info("Received 6-digit code via Telegram -- validating.")
+        try:
+            accepted = api.validate_2fa_code(code)
+        except Exception as e:
+            LOGGER.warning(
+                f"validate_2fa_code raised: {e!s} -- waiting for another code.",
+            )
+            continue
+        if not accepted:
+            LOGGER.warning(
+                "Apple rejected the Telegram-supplied code -- waiting for another.",
+            )
+            continue
+        # Code accepted. trust_session is best-effort; failure just means
+        # the next sync may need 2FA again sooner than expected.
+        try:
+            api.trust_session()
+        except Exception as e:
+            LOGGER.warning(f"trust_session raised (non-fatal): {e!s}")
+        LOGGER.info("Telegram-driven 2FA succeeded; resuming sync.")
+        return True
+    LOGGER.info(
+        "Telegram listen timeout reached with no usable code; retrying auth.",
+    )
+    return False
 
 
 def _handle_password_error(config, username: str, sync_state: SyncState):
@@ -664,7 +866,7 @@ def _handle_password_error(config, username: str, sync_state: SyncState):
         bool: True if should continue (retry), False if should exit
     """
     LOGGER.error(
-        "Password is not stored in keyring. Please save the password in keyring."
+        "Password is not stored in keyring. Please save the password in keyring.",
     )
     sleep_for = config_parser.get_retry_login_interval(config=config)
 
@@ -679,6 +881,7 @@ def _handle_password_error(config, username: str, sync_state: SyncState):
         username=username,
         last_send=sync_state.last_send,
         region=server_region,
+        dashboard_url=_resolve_dashboard_url(config),
     )
     sleep(sleep_for)
     return True
@@ -833,7 +1036,8 @@ def sync(dry_run: bool = False, check_files: int | None = None):
             startup_logged = True
 
         drive_sync_interval, photos_sync_interval = _extract_sync_intervals(
-            config, log_messages=False
+            config,
+            log_messages=False,
         )
         username = config_parser.get_username(config=config) if config else None
 
@@ -871,15 +1075,26 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                     return
 
                 if not api.requires_2sa:
+                    # Trust-window check: record current cookie expiry and
+                    # fire a pre-emptive warning once if it's about to lapse.
+                    # Best-effort: any failure is logged + swallowed inside.
+                    _maybe_warn_trust_expiring(config, api, username)
+
                     # Create summary for this sync cycle
                     summary = SyncSummary()
 
                     # Perform syncs and collect statistics
                     drive_stats = _perform_drive_sync(
-                        config, api, sync_state, drive_sync_interval
+                        config,
+                        api,
+                        sync_state,
+                        drive_sync_interval,
                     )
                     photos_stats = _perform_photos_sync(
-                        config, api, sync_state, photos_sync_interval
+                        config,
+                        api,
+                        sync_state,
+                        photos_sync_interval,
                     )
 
                     # Populate summary with statistics
@@ -916,7 +1131,7 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                         pass
                     except Exception as e:
                         LOGGER.debug(
-                            f"web_signals: record_sync_completion raised: {e!s}"
+                            f"web_signals: record_sync_completion raised: {e!s}",
                         )
 
                     # Send usage statistics (anonymized summary data)
@@ -949,15 +1164,17 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                             notify.send_sync_summary(config=config, summary=summary)
                         except Exception as e:
                             LOGGER.debug(
-                                f"Failed to send sync summary notification: {e!s}"
+                                f"Failed to send sync summary notification: {e!s}",
                             )
 
                     if not _check_services_configured(config):
                         LOGGER.warning(
-                            "Nothing to sync. Please add drive: and/or photos: section in config.yaml file."
+                            "Nothing to sync. Please add drive: and/or photos: section in config.yaml file.",
                         )
                 else:
-                    if not _handle_2fa_required(config, username, sync_state):
+                    # Pass the live api so the Telegram-listen path can
+                    # call validate_2fa_code on this exact session.
+                    if not _handle_2fa_required(config, username, sync_state, api=api):
                         break
                     continue
 
@@ -971,7 +1188,7 @@ def sync(dry_run: bool = False, check_files: int | None = None):
 
         if _should_exit_oneshot_mode(config):
             LOGGER.info(
-                "All configured sync intervals are negative, exiting oneshot mode..."
+                "All configured sync intervals are negative, exiting oneshot mode...",
             )
             break
 

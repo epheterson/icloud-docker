@@ -1,7 +1,9 @@
 """Send notifications when 2FA is required for iCloud authentication."""
 
 import datetime
+import re
 import smtplib
+from typing import Any
 
 import requests
 
@@ -28,25 +30,84 @@ def _is_throttled(last_send) -> bool:
         return False
     if not isinstance(last_send, datetime.datetime):
         return False
-    return last_send > datetime.datetime.now() - datetime.timedelta(hours=THROTTLE_HOURS)
+    return last_send > datetime.datetime.now() - datetime.timedelta(
+        hours=THROTTLE_HOURS,
+    )
 
 
-def _create_2fa_message(username: str, region: str = "global") -> tuple[str, str]:
+def _create_2fa_message(
+    username: str,
+    region: str = "global",
+    dashboard_url: str | None = None,
+    title: str = "icloud-docker",
+) -> tuple[str, str]:
     """
     Create the 2FA notification message and subject.
 
     Args:
         username: The iCloud username requiring 2FA
         region: The iCloud region (default: "global")
+        dashboard_url: Web UI URL (optional). When provided, the message
+            tells the user to tap the URL instead of running the docker
+            exec command. Set from ``app.web_ui.public_url`` (or the
+            host:port fallback) by ``send()`` when ``app.web_ui.enabled``
+            is true.
+        title: Identifier prefix on body + subject (default
+            ``"icloud-docker"``). Threaded from
+            ``config_parser.get_notification_title``.
 
     Returns:
         Tuple of (message, subject)
     """
-    region_opt = "" if region == "global" else f"--region={region} "
-    message = f"""Two-step authentication for iCloud Drive, Photos (Docker) is required.
+    if dashboard_url:
+        message = f"{title}: iCloud login required. Sign in at {dashboard_url}/auth"
+    else:
+        region_opt = "" if region == "global" else f"--region={region} "
+        message = f"""Two-step authentication for iCloud Drive, Photos (Docker) is required.
                 Please login to your server and authenticate. Please run -
                 `docker exec -it icloud /bin/sh -c "su-exec abc icloud --session-directory=/config/session_data {region_opt}--username={username}"`."""  # noqa: E501
-    subject = f"icloud-docker: Two step authentication is required for {username}"
+    subject = f"{title}: iCloud login required for {username}"
+    return message, subject
+
+
+def _create_trust_expiring_message(
+    username: str,
+    days_remaining: int,
+    dashboard_url: str | None = None,
+    title: str = "icloud-docker",
+) -> tuple[str, str]:
+    """
+    Create the trust-expiring notification message and subject.
+
+    Fires once per cookie lifetime when ``days_remaining`` first drops
+    below ``app.trust_expiry_warn_days`` so the user can refresh trust
+    BEFORE the sync loop hits a failed-auth state.
+
+    Args:
+        username: The iCloud username whose trust window is expiring
+        days_remaining: Days until ``X-APPLE-WEBAUTH-HSA-TRUST`` expires
+        dashboard_url: Web UI URL (optional). When provided, the message
+            tells the user to tap the URL to refresh trust without
+            retyping their password.
+        title: Identifier prefix on body + subject (default
+            ``"icloud-docker"``).
+
+    Returns:
+        Tuple of (message, subject)
+    """
+    horizon = (
+        "today"
+        if days_remaining <= 0
+        else f"in {days_remaining} day{'s' if days_remaining != 1 else ''}"
+    )
+    if dashboard_url:
+        message = f"{title}: iCloud login expires {horizon}, refresh at {dashboard_url}"
+    else:
+        message = (
+            f"{title}: iCloud login expires {horizon}. "
+            f"Sign in to the container to refresh before the next sync fails."
+        )
+    subject = f"{title}: iCloud login for {username} expires {horizon}"
     return message, subject
 
 
@@ -95,7 +156,9 @@ def notify_telegram(config, message, last_send=None, dry_run=False):
 
     bot_token, chat_id, is_configured = _get_telegram_config(config)
     if not is_configured:
-        LOGGER.warning("Not sending 2FA notification because Telegram is not configured.")
+        LOGGER.warning(
+            "Not sending 2FA notification because Telegram is not configured.",
+        )
         return None
 
     sent_on = _get_current_timestamp()
@@ -128,6 +191,81 @@ def post_message_to_telegram(bot_token: str, chat_id: str, message: str) -> bool
     # Log error message
     LOGGER.error(f"Failed to send telegram notification. Response: {response.text}")
     return False
+
+
+_TWO_FA_CODE_RE = re.compile(r"^\d{6}$")
+
+
+def poll_telegram_for_code(
+    bot_token: str,
+    chat_id: str,
+    offset: int = 0,
+    request_timeout: int = 10,
+) -> tuple[str | None, int]:
+    """Poll Telegram getUpdates for a 6-digit reply from ``chat_id``.
+
+    Returns ``(code, new_offset)``:
+      - ``code`` is the first ``^\\d{6}$`` text message from the configured
+        ``chat_id`` newer than ``offset``, or ``None`` if no such message.
+      - ``new_offset`` is the highest ``update_id`` we observed (regardless
+        of whether it produced a code), so the next poll skips messages we
+        already saw. Caller persists this between polls via
+        ``web_signals.record_telegram_offset``.
+
+    Telegram silently drops updates older than 24 hours, so an offset
+    that's "too old" just returns nothing -- safe to start from 0 on
+    fresh boot. Network / API failures are logged + swallowed; the
+    function returns ``(None, offset)`` so the caller keeps trying.
+
+    Anything from a chat other than ``chat_id`` is ignored. Anything
+    other than a 6-digit text message is ignored. Both filters track
+    update_id forward so we don't loop on the same noise.
+    """
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    params: dict[str, Any] = {
+        "offset": offset + 1,
+        "allowed_updates": '["message"]',
+        "timeout": 0,  # no long-poll on the server side; we control cadence
+    }
+    try:
+        response = requests.post(url, params=params, timeout=request_timeout)
+    except (requests.RequestException, OSError) as e:
+        LOGGER.warning(f"telegram getUpdates failed: {e!s}")
+        return None, offset
+
+    if response.status_code != 200:
+        LOGGER.warning(
+            f"telegram getUpdates returned {response.status_code}: {response.text[:200]}",
+        )
+        return None, offset
+
+    try:
+        payload = response.json()
+    except ValueError as e:
+        LOGGER.warning(f"telegram getUpdates: malformed JSON: {e!s}")
+        return None, offset
+
+    updates = payload.get("result") or []
+    code_found: str | None = None
+    new_offset = offset
+    for update in updates:
+        update_id = update.get("update_id")
+        if isinstance(update_id, int) and update_id > new_offset:
+            new_offset = update_id
+        if code_found is not None:
+            continue  # still walk to advance offset past extra updates
+        message = update.get("message") or {}
+        chat = message.get("chat") or {}
+        # Telegram chat_id can come back as int OR string depending on the
+        # message origin; compare as strings to tolerate both.
+        if str(chat.get("id")) != str(chat_id):
+            continue
+        text = (message.get("text") or "").strip()
+        if _TWO_FA_CODE_RE.fullmatch(text):
+            code_found = text
+    return code_found, new_offset
+
+
 
 
 def _get_discord_config(config) -> tuple[str | None, str | None, bool]:
@@ -186,7 +324,9 @@ def notify_discord(config, message, last_send=None, dry_run=False):
 
     webhook_url, username, is_configured = _get_discord_config(config)
     if not is_configured:
-        LOGGER.warning("Not sending 2FA notification because Discord is not configured.")
+        LOGGER.warning(
+            "Not sending 2FA notification because Discord is not configured.",
+        )
         return None
 
     sent_on = _get_current_timestamp()
@@ -212,7 +352,12 @@ def _get_pushover_config(config) -> tuple[str | None, str | None, int | None, bo
     return user_key, api_token, priority, is_configured
 
 
-def post_message_to_pushover(api_token: str, user_key: str, priority: int | None, message: str) -> bool:
+def post_message_to_pushover(
+    api_token: str,
+    user_key: str,
+    priority: int | None,
+    message: str,
+) -> bool:
     """
     Post message to Pushover API.
 
@@ -255,7 +400,9 @@ def notify_pushover(config, message, last_send=None, dry_run=False):
 
     user_key, api_token, priority, is_configured = _get_pushover_config(config)
     if not is_configured:
-        LOGGER.warning("Not sending 2FA notification because Pushover is not configured.")
+        LOGGER.warning(
+            "Not sending 2FA notification because Pushover is not configured.",
+        )
         return None
 
     sent_on = _get_current_timestamp()
@@ -286,7 +433,9 @@ def notify_email(config, message: str, subject: str, last_send=None, dry_run=Fal
         LOGGER.info("Throttling email to once a day")
         return last_send
 
-    email, to_email, host, port, no_tls, username, password, is_configured = _get_smtp_config(config)
+    email, to_email, host, port, no_tls, username, password, is_configured = (
+        _get_smtp_config(config)
+    )
     if not is_configured:
         LOGGER.warning("Not sending 2FA notification because SMTP is not configured")
         return None
@@ -313,7 +462,14 @@ def notify_email(config, message: str, subject: str, last_send=None, dry_run=Fal
         return None
 
 
-def send(config, username, last_send=None, dry_run=False, region="global"):
+def send(
+    config,
+    username,
+    last_send=None,
+    dry_run=False,
+    region="global",
+    dashboard_url=None,
+):
     """
     Send 2FA notification to all configured notification services.
 
@@ -323,26 +479,139 @@ def send(config, username, last_send=None, dry_run=False, region="global"):
         last_send: Timestamp of last send for throttling
         dry_run: If True, don't actually send notifications
         region: iCloud region (default: "global")
+        dashboard_url: When set, message body links the user to this URL
+            (web UI ``/auth``) instead of the docker-exec command. Caller
+            should resolve from ``app.web_ui.public_url`` (or the
+            host:port fallback) when ``app.web_ui.enabled`` is true.
 
     Returns:
         Timestamp when notifications were sent, or None if all failed
     """
-    message, subject = _create_2fa_message(username, region)
+    message, subject = _create_2fa_message(
+        username,
+        region,
+        dashboard_url=dashboard_url,
+        title=config_parser.get_notification_title(config=config),
+    )
 
     # Send to all notification services
-    telegram_sent = notify_telegram(config=config, message=message, last_send=last_send, dry_run=dry_run)
-    discord_sent = notify_discord(config=config, message=message, last_send=last_send, dry_run=dry_run)
-    pushover_sent = notify_pushover(config=config, message=message, last_send=last_send, dry_run=dry_run)
-    email_sent = notify_email(config=config, message=message, subject=subject, last_send=last_send, dry_run=dry_run)
+    telegram_sent = notify_telegram(
+        config=config,
+        message=message,
+        last_send=last_send,
+        dry_run=dry_run,
+    )
+    discord_sent = notify_discord(
+        config=config,
+        message=message,
+        last_send=last_send,
+        dry_run=dry_run,
+    )
+    pushover_sent = notify_pushover(
+        config=config,
+        message=message,
+        last_send=last_send,
+        dry_run=dry_run,
+    )
+    email_sent = notify_email(
+        config=config,
+        message=message,
+        subject=subject,
+        last_send=last_send,
+        dry_run=dry_run,
+    )
 
     # Return the timestamp if any notification was sent successfully
-    sent_timestamps = [t for t in [telegram_sent, discord_sent, pushover_sent, email_sent] if t is not None]
+    sent_timestamps = [
+        t
+        for t in [telegram_sent, discord_sent, pushover_sent, email_sent]
+        if t is not None
+    ]
+    return sent_timestamps[0] if sent_timestamps else None
+
+
+def send_trust_expiring(
+    config,
+    username,
+    days_remaining,
+    last_send=None,
+    dry_run=False,
+    dashboard_url=None,
+):
+    """Send trust-expiring notification to all configured services.
+
+    Mirrors ``send()`` but for the pre-emptive "trust window closing"
+    event. Caller is responsible for the once-per-cookie-lifetime
+    debounce (see ``web_signals.get_trust_state`` /
+    ``record_trust_state``); the ``last_send`` arg here is the
+    daily-throttle from ``_is_throttled`` shared with the 2FA flow,
+    not the per-cookie one.
+
+    Args:
+        config: Configuration dictionary
+        username: iCloud username whose trust window is expiring
+        days_remaining: Days until ``X-APPLE-WEBAUTH-HSA-TRUST`` expires
+        last_send: Timestamp of last send for daily throttling
+        dry_run: If True, don't actually send notifications
+        dashboard_url: When set, message body links the user to this
+            URL (web UI dashboard) instead of the docker-exec
+            instruction. Caller resolves from ``app.web_ui.public_url``
+            (or the host:port fallback) when web UI is enabled.
+
+    Returns:
+        Timestamp when notifications were sent, or None if all failed.
+    """
+    message, subject = _create_trust_expiring_message(
+        username,
+        days_remaining,
+        dashboard_url=dashboard_url,
+        title=config_parser.get_notification_title(config=config),
+    )
+    telegram_sent = notify_telegram(
+        config=config,
+        message=message,
+        last_send=last_send,
+        dry_run=dry_run,
+    )
+    discord_sent = notify_discord(
+        config=config,
+        message=message,
+        last_send=last_send,
+        dry_run=dry_run,
+    )
+    pushover_sent = notify_pushover(
+        config=config,
+        message=message,
+        last_send=last_send,
+        dry_run=dry_run,
+    )
+    email_sent = notify_email(
+        config=config,
+        message=message,
+        subject=subject,
+        last_send=last_send,
+        dry_run=dry_run,
+    )
+    sent_timestamps = [
+        t
+        for t in [telegram_sent, discord_sent, pushover_sent, email_sent]
+        if t is not None
+    ]
     return sent_timestamps[0] if sent_timestamps else None
 
 
 def _get_smtp_config(
     config,
-) -> tuple[str | None, str | None, str | None, int | None, bool, str | None, str | None, bool]:
+) -> tuple[
+    str | None,
+    str | None,
+    str | None,
+    int | None,
+    bool,
+    str | None,
+    str | None,
+    bool,
+]:
     """
     Extract SMTP configuration from config.
 
@@ -383,7 +652,12 @@ def _create_smtp_connection(host: str, port: int, no_tls: bool) -> smtplib.SMTP:
     return smtp
 
 
-def _authenticate_smtp(smtp: smtplib.SMTP, email: str, username: str | None, password: str) -> None:
+def _authenticate_smtp(
+    smtp: smtplib.SMTP,
+    email: str,
+    username: str | None,
+    password: str,
+) -> None:
     """
     Authenticate SMTP connection.
 
@@ -399,7 +673,12 @@ def _authenticate_smtp(smtp: smtplib.SMTP, email: str, username: str | None, pas
         smtp.login(email, password)
 
 
-def _send_email_message(smtp: smtplib.SMTP, email: str, to_email: str, message_obj: Message) -> None:
+def _send_email_message(
+    smtp: smtplib.SMTP,
+    email: str,
+    to_email: str,
+    message_obj: Message,
+) -> None:
     """
     Send email message through SMTP connection.
 
@@ -478,9 +757,13 @@ def _format_sync_summary_message(summary) -> tuple[str, str]:
         message_lines.append("📁 Drive:")
         if drive.files_downloaded > 0:
             size_str = format_bytes(drive.bytes_downloaded)
-            message_lines.append(f"  • Downloaded: {drive.files_downloaded} files ({size_str})")
+            message_lines.append(
+                f"  • Downloaded: {drive.files_downloaded} files ({size_str})",
+            )
         if drive.files_skipped > 0:
-            message_lines.append(f"  • Skipped: {drive.files_skipped} files (up-to-date)")
+            message_lines.append(
+                f"  • Skipped: {drive.files_skipped} files (up-to-date)",
+            )
         if drive.files_removed > 0:
             message_lines.append(f"  • Removed: {drive.files_removed} obsolete files")
         if drive.duration_seconds > 0:
@@ -496,7 +779,9 @@ def _format_sync_summary_message(summary) -> tuple[str, str]:
         message_lines.append("📷 Photos:")
         if photos.photos_downloaded > 0:
             size_str = format_bytes(photos.bytes_downloaded)
-            message_lines.append(f"  • Downloaded: {photos.photos_downloaded} photos ({size_str})")
+            message_lines.append(
+                f"  • Downloaded: {photos.photos_downloaded} photos ({size_str})",
+            )
         if photos.photos_hardlinked > 0:
             message_lines.append(f"  • Hard-linked: {photos.photos_hardlinked} photos")
         if photos.bytes_saved_by_hardlinks > 0:
@@ -689,7 +974,9 @@ def _send_email_no_throttle(config, message: str, subject: str, dry_run: bool) -
     Returns:
         True if sent successfully, False otherwise
     """
-    email, to_email, host, port, no_tls, username, password, is_configured = _get_smtp_config(config)
+    email, to_email, host, port, no_tls, username, password, is_configured = (
+        _get_smtp_config(config)
+    )
     if not is_configured:
         return False
 
