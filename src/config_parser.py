@@ -1090,7 +1090,12 @@ def get_telegram_auth_keyword(config: dict) -> str:
     Pairs with ``app.notification_title`` for per-container disambiguation.
     Matched case-insensitively. Returns the lowercased keyword.
     """
-    value = get_notification_config_value(config, "telegram", "auth_keyword")
+    # Optional key with a sane default -- quiet lookup so the absent case
+    # doesn't log a "not found" warning on every 2FA wait.
+    value = get_config_value_or_none(
+        config=config,
+        config_path=["app", "telegram", "auth_keyword"],
+    )
     return str(value).strip().lower() if value else "auth"
 
 
