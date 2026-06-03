@@ -888,11 +888,7 @@ def validate_file_sizes(file_sizes: list[str]) -> list[str]:
     Returns:
         List of valid file sizes (defaults to ["original"] if all invalid)
     """
-    valid_file_sizes = [
-        k
-        for k in PhotoAsset.PHOTO_VERSION_LOOKUP.keys()
-        if not k.startswith("live_video_")
-    ]
+    valid_file_sizes = [k for k in PhotoAsset.PHOTO_VERSION_LOOKUP.keys() if not k.startswith("live_video_")]
     validated_sizes = []
 
     for file_size in file_sizes:
@@ -940,10 +936,35 @@ def get_photos_preserve_originals_as_bak(config: dict) -> bool:
     return bool(value) if value is not None else False
 
 
-def get_photos_libraries_filter(
-    config: dict,
-    base_config_path: list[str],
-) -> list[str] | None:
+def get_photos_file_format(config: dict) -> str | None:
+    """Single filename template applied to all versions (``photos.file_format``).
+
+    Mirrors ``folder_format`` but for the filename. Uses ``${photo.*}`` tokens
+    (see ``photo_path_utils.render_filename_template``). When set it overrides
+    ``filename_format``. Returns ``None`` (use ``filename_format``) when unset.
+    """
+    config_path = ["photos", "file_format"]
+    value = get_config_value_or_none(config=config, config_path=config_path)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        log_config_not_found_warning(config_path, "must be a non-empty template string; ignoring")
+        return None
+    return value
+
+
+def get_photos_variant_separator(config: dict) -> str:
+    """Separator inserted before the variant in ``${photo.variant_suffix}``.
+
+    Defaults to ``"_"``. Only appears when a version is non-primary (not
+    original/full), so primaries stay un-suffixed.
+    """
+    config_path = ["photos", "variant_separator"]
+    value = get_config_value_or_none(config=config, config_path=config_path)
+    return str(value) if value is not None else "_"
+
+
+def get_photos_libraries_filter(config: dict, base_config_path: list[str]) -> list[str] | None:
     """Get libraries filter from photos config.
 
     Args:

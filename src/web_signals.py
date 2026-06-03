@@ -38,6 +38,13 @@ def _config_dir() -> str:
     setup: same logic the keyring redirect uses, so dev hosts without
     ``/config`` still work via a tempdir.
     """
+    # Read ICLOUD_DOCKER_CONFIG_DIR live so an override set after import
+    # (operator env, test redirects) is honored — the module-level
+    # DEFAULT_COOKIE_DIRECTORY is captured at import time and would otherwise
+    # pin state to "/config" even when the operator redirected the config dir.
+    override = os.environ.get("ICLOUD_DOCKER_CONFIG_DIR")
+    if override:
+        return override
     # DEFAULT_COOKIE_DIRECTORY is "<config_dir>/session_data"; strip the
     # trailing component to recover the config dir.
     return os.path.dirname(DEFAULT_COOKIE_DIRECTORY) or "/config"
