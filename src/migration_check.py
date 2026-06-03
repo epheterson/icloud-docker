@@ -38,9 +38,7 @@ from src.sync_photos import _library_destination
 LOGGER = get_logger()
 
 
-def _check_one_photo(
-    photo, library_dest: str, folder_format: str | None
-) -> tuple[str, str, int, int]:
+def _check_one_photo(photo, library_dest: str, folder_format: str | None) -> tuple[str, str, int, int]:
     """Compute target path + status for a single photo. Returns
     ``(status, path, expected_size, actual_size)`` where ``status`` is
     one of ``would_skip`` / ``size_mismatch`` / ``not_found`` /
@@ -54,9 +52,7 @@ def _check_one_photo(
         target_path = os.path.join(folder_path, filename)
         expected = int(photo.versions[file_size]["size"])
     except Exception as e:
-        LOGGER.debug(
-            f"check_migration: failed to compute path for {getattr(photo, 'filename', '?')}: {e!s}"
-        )
+        LOGGER.debug(f"check_migration: failed to compute path for {getattr(photo, 'filename', '?')}: {e!s}")
         return "error", "", 0, 0
 
     if not os.path.isfile(target_path):
@@ -104,9 +100,7 @@ def check_library(
                 break
             seen += 1
             checked += 1
-            status, path, expected, actual = _check_one_photo(
-                photo, library_dest, folder_format
-            )
+            status, path, expected, actual = _check_one_photo(photo, library_dest, folder_format)
             stats[status] = stats.get(status, 0) + 1
             if status in samples and len(samples[status]) < 3:
                 if status == "size_mismatch":
@@ -155,9 +149,7 @@ def check_migration(api, config: dict, sample: int = 0) -> dict[str, Any]:
 
     results: dict[str, Any] = {}
     for library_name in api.photos.libraries:
-        LOGGER.info(
-            f"check_migration: walking library {library_name} (sample={sample or 'all'}) ..."
-        )
+        LOGGER.info(f"check_migration: walking library {library_name} (sample={sample or 'all'}) ...")
         library = api.photos.libraries[library_name]
         results[library_name] = check_library(
             library=library,
@@ -197,9 +189,7 @@ def _check_one_drive_file(item, local_path: str) -> tuple[str, str, int, int]:
 
     if os.path.isdir(local_path):
         try:
-            actual = sum(
-                f.stat().st_size for f in Path(local_path).glob("**/*") if f.is_file()
-            )
+            actual = sum(f.stat().st_size for f in Path(local_path).glob("**/*") if f.is_file())
         except OSError:
             return "error", local_path, expected, 0
     elif os.path.isfile(local_path):
@@ -215,9 +205,7 @@ def _check_one_drive_file(item, local_path: str) -> tuple[str, str, int, int]:
     return "size_mismatch", local_path, expected, actual
 
 
-def _walk_drive_recursive(
-    folder, destination_path: str, sample: int, state: dict
-) -> None:
+def _walk_drive_recursive(folder, destination_path: str, sample: int, state: dict) -> None:
     """Recursively walk a Drive folder, mutating ``state`` in place.
 
     ``state`` shape:
@@ -255,18 +243,14 @@ def _walk_drive_recursive(
                 decoded = unquote(getattr(item, "name", name))
             except Exception:
                 decoded = name
-            sub_dest = unicodedata.normalize(
-                "NFC", os.path.join(destination_path, decoded)
-            )
+            sub_dest = unicodedata.normalize("NFC", os.path.join(destination_path, decoded))
             _walk_drive_recursive(item, sub_dest, sample, state)
         elif item_type == "file":
             try:
                 decoded = unquote(getattr(item, "name", name))
             except Exception:
                 decoded = name
-            local_path = unicodedata.normalize(
-                "NFC", os.path.join(destination_path, decoded)
-            )
+            local_path = unicodedata.normalize("NFC", os.path.join(destination_path, decoded))
             status, path, expected, actual = _check_one_drive_file(item, local_path)
             state["stats"][status] = state["stats"].get(status, 0) + 1
             state["checked"] += 1
@@ -325,6 +309,4 @@ def check_drive_migration(api, config: dict, sample: int = 0) -> dict[str, Any] 
         LOGGER.warning(f"check_migration: drive destination resolution failed: {e!s}")
         return None
     LOGGER.info(f"check_migration: walking iCloud Drive (sample={sample or 'all'}) ...")
-    return check_drive(
-        drive=api.drive, drive_destination=drive_destination, sample=sample
-    )
+    return check_drive(drive=api.drive, drive_destination=drive_destination, sample=sample)

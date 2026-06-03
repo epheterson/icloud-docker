@@ -13,7 +13,8 @@ class TestDockerEntrypoint(unittest.TestCase):
     def setUp(self) -> None:
         """Initialize tests."""
         self.entrypoint_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "docker-entrypoint.sh",
+            os.path.dirname(os.path.dirname(__file__)),
+            "docker-entrypoint.sh",
         )
         return super().setUp()
 

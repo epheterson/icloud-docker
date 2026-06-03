@@ -109,7 +109,6 @@ class TestSetDefaultFilenameFormat(unittest.TestCase):
         assert photo_path_utils._DEFAULT_FILENAME_FORMAT == "simple"  # noqa: SLF001
 
 
-
 class TestFilenameFormatEndToEnd(unittest.TestCase):
     """Regression test for CRITICAL-2 from the 2026-05-27 pre-submission review.
 
@@ -150,6 +149,7 @@ class TestFilenameFormatEndToEnd(unittest.TestCase):
         # With simple format, path basename is plain `IMG_9999.HEIC`
         # (NOT IMG_9999__original__<base64id>.HEIC)
         import os
+
         basename = os.path.basename(path)
         assert basename == "IMG_9999.HEIC", (
             f"Expected plain `IMG_9999.HEIC` (simple format), got `{basename}`. "
@@ -173,6 +173,7 @@ class TestFilenameFormatEndToEnd(unittest.TestCase):
             folder_format=None,
         )
         import os
+
         basename = os.path.basename(path)
         # metadata format: IMG_8888__original__<base64id>.HEIC
         assert basename.startswith("IMG_8888__original__")

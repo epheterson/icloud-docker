@@ -111,14 +111,16 @@ def _build_service(config: dict, service: str, marker_filename: str) -> dict[str
     if service == "photos":
         destination = config_parser.prepare_photos_destination(config=config)
         interval = config_parser.get_photos_sync_interval(
-            config=config, log_messages=False,
+            config=config,
+            log_messages=False,
         )
         name = "Photos"
         library_destinations = _get_library_destinations(config=config)
     else:
         destination = config_parser.prepare_drive_destination(config=config)
         interval = config_parser.get_drive_sync_interval(
-            config=config, log_messages=False,
+            config=config,
+            log_messages=False,
         )
         name = "Drive"
         library_destinations = {}
@@ -139,18 +141,13 @@ def _build_service(config: dict, service: str, marker_filename: str) -> dict[str
         if started_at and (not completed_at or started_at > completed_at):
             is_running = True
         stats = {
-            "last_sync_relative": (
-                web_signals.format_relative_time(completed_at) if completed_at else None
-            ),
+            "last_sync_relative": (web_signals.format_relative_time(completed_at) if completed_at else None),
             "files_downloaded": state.get("files_downloaded"),
             "files_skipped": state.get("files_skipped"),
             "files_removed": state.get("files_removed"),
             "files_on_disk": (
                 (state.get("files_downloaded") or 0) + (state.get("files_skipped") or 0)
-                if (
-                    state.get("files_downloaded") is not None
-                    or state.get("files_skipped") is not None
-                )
+                if (state.get("files_downloaded") is not None or state.get("files_skipped") is not None)
                 else None
             ),
             "errors": state.get("errors", 0),
@@ -169,7 +166,8 @@ def _build_service(config: dict, service: str, marker_filename: str) -> dict[str
         "destination_exists": os.path.isdir(destination),
         "sync_interval_s": interval,
         "require_mount_marker": _get_require_mount_marker(
-            config=config, service=service,
+            config=config,
+            service=service,
         ),
         "marker_present": os.path.isfile(marker_path),
         "marker_path": marker_path,
@@ -237,13 +235,17 @@ def _build_status(config: dict | None) -> dict[str, Any]:
     if "photos" in config:
         services.append(
             _build_service(
-                config=config, service="photos", marker_filename=marker_filename,
+                config=config,
+                service="photos",
+                marker_filename=marker_filename,
             ),
         )
     if "drive" in config:
         services.append(
             _build_service(
-                config=config, service="drive", marker_filename=marker_filename,
+                config=config,
+                service="drive",
+                marker_filename=marker_filename,
             ),
         )
 
@@ -256,11 +258,7 @@ def _build_status(config: dict | None) -> dict[str, Any]:
             import datetime
 
             exp = datetime.datetime.fromisoformat(trust_expires_at)
-            now = (
-                datetime.datetime.now(tz=exp.tzinfo)
-                if exp.tzinfo
-                else datetime.datetime.now()
-            )
+            now = datetime.datetime.now(tz=exp.tzinfo) if exp.tzinfo else datetime.datetime.now()
             trust_days_remaining = (exp - now).days
         except (
             ValueError,
@@ -333,9 +331,7 @@ def create_app(testing: bool = False) -> Flask:
         dashboard or auth payloads. The dashboard is always live data —
         a cached snapshot would hide a missing mount marker or an
         expired session."""
-        response.headers["Cache-Control"] = (
-            "private, no-store, no-cache, must-revalidate, max-age=0"
-        )
+        response.headers["Cache-Control"] = "private, no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         return response
@@ -448,7 +444,8 @@ def create_app(testing: bool = False) -> Flask:
             LOGGER.exception("Web UI auth failed during ICloudPyService instantiation")
             return (
                 _render_auth(
-                    message=f"Authentication failed: {e!s}", message_kind="err",
+                    message=f"Authentication failed: {e!s}",
+                    message_kind="err",
                 ),
                 400,
             )
@@ -474,7 +471,8 @@ def create_app(testing: bool = False) -> Flask:
         # next retry, then bounce back to the dashboard.
         try:
             icloudpy_utils.store_password_in_keyring(
-                username=username, password=password,
+                username=username,
+                password=password,
             )
         except Exception as e:
             LOGGER.warning(f"Web UI keyring persist failed (non-fatal): {e!s}")
@@ -518,7 +516,8 @@ def create_app(testing: bool = False) -> Flask:
             LOGGER.exception("Web UI: validate_2fa_code raised")
             return (
                 _render_auth(
-                    message=f"2FA validation error: {e!s}", message_kind="err",
+                    message=f"2FA validation error: {e!s}",
+                    message_kind="err",
                 ),
                 400,
             )
@@ -546,7 +545,8 @@ def create_app(testing: bool = False) -> Flask:
             from icloudpy import utils as icloudpy_utils
 
             icloudpy_utils.store_password_in_keyring(
-                username=username, password=password,
+                username=username,
+                password=password,
             )
         except Exception as e:
             LOGGER.warning(f"Web UI keyring persist failed (non-fatal): {e!s}")
@@ -616,10 +616,7 @@ def create_app(testing: bool = False) -> Flask:
         if not password:
             return (
                 _render_auth(
-                    message=(
-                        "No password in keyring — submit one below to "
-                        "complete the first-time auth."
-                    ),
+                    message=("No password in keyring — submit one below to complete the first-time auth."),
                     message_kind="warn",
                 ),
                 400,
@@ -638,8 +635,7 @@ def create_app(testing: bool = False) -> Flask:
             return (
                 _render_auth(
                     message=(
-                        f"Refresh trust failed: {e!s}. Your stored "
-                        "password may be stale — submit a new one below."
+                        f"Refresh trust failed: {e!s}. Your stored password may be stale — submit a new one below."
                     ),
                     message_kind="err",
                 ),
@@ -678,11 +674,7 @@ def create_app(testing: bool = False) -> Flask:
         Idempotent: tapping repeatedly while a request is still queued
         is a no-op (the sentinel just gets re-touched).
         """
-        service = (
-            (request.form.get("service") or request.args.get("service") or "")
-            .strip()
-            .lower()
-        )
+        service = (request.form.get("service") or request.args.get("service") or "").strip().lower()
         if service == "all":
             wanted = ("drive", "photos")
         elif service in ("drive", "photos"):
@@ -736,7 +728,8 @@ def _render_auth(message: str | None, message_kind: str | None):
 
 
 def start_in_thread(
-    host: str = "0.0.0.0", port: int = 8080,
+    host: str = "0.0.0.0",
+    port: int = 8080,
 ) -> threading.Thread:  # noqa: S104
     """Launch the Flask app on a daemon thread.
 
@@ -754,7 +747,11 @@ def start_in_thread(
             # default single-threaded server can intermittently return
             # empty bodies when two requests overlap.
             app.run(
-                host=host, port=port, debug=False, use_reloader=False, threaded=True,
+                host=host,
+                port=port,
+                debug=False,
+                use_reloader=False,
+                threaded=True,
             )
         except OSError as e:
             LOGGER.error(f"Web UI failed to bind {host}:{port} — {e!s}")

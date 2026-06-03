@@ -67,9 +67,7 @@ def get_max_threads_for_download(config) -> int:
     return config_parser.get_app_max_threads(config)
 
 
-def generate_photo_path(
-    photo, file_size: str, destination_path: str, folder_format: str | None,
-) -> str:
+def generate_photo_path(photo, file_size: str, destination_path: str, folder_format: str | None) -> str:
     """Generate full file path for photo with legacy file renaming.
 
     This function combines path generation, folder creation, and legacy
@@ -89,7 +87,9 @@ def generate_photo_path(
 
     # Create folder path if needed
     final_destination = create_folder_path_if_needed(
-        destination_path, folder_format, photo,
+        destination_path,
+        folder_format,
+        photo,
     )
 
     # Generate paths for legacy file format handling
@@ -100,11 +100,7 @@ def generate_photo_path(
     file_path = os.path.join(destination_path, filename)
     file_size_path = os.path.join(
         destination_path,
-        (
-            f"{'__'.join([name, file_size])}"
-            if extension == ""
-            else f"{'__'.join([name, file_size])}.{extension}"
-        ),
+        (f"{'__'.join([name, file_size])}" if extension == "" else f"{'__'.join([name, file_size])}.{extension}"),
     )
 
     # Final path with normalization
@@ -145,12 +141,15 @@ def collect_download_task(
     """
     # Check if file size exists on server
     if file_size not in photo.versions:
-        photo_path = generate_photo_path(
-            photo, file_size, destination_path, folder_format,
-        )
-        LOGGER.warning(
-            f"File size {file_size} not found on server. Skipping the photo {photo_path} ...",
-        )
+        photo_path = generate_photo_path(photo, file_size, destination_path, folder_format)
+        # A missing live_video_* version just means this isn't a Live Photo --
+        # expected for most assets, so log at DEBUG to avoid warning-spam when
+        # live_video_original is in file_sizes. Other sizes warn as before.
+        msg = f"File size {file_size} not found on server. Skipping the photo {photo_path} ..."
+        if file_size.startswith("live_video_"):
+            LOGGER.debug(msg)
+        else:
+            LOGGER.warning(msg)
         return None
 
     # Generate photo path
@@ -193,10 +192,14 @@ def collect_download_task(
             in_flight_collision = photo_path in files
     if is_non_unique and (os.path.isfile(photo_path) or in_flight_collision):
         suffix_folder = create_folder_path_if_needed(
-            destination_path, folder_format, photo,
+            destination_path,
+            folder_format,
+            photo,
         )
         suffix_basename = generate_photo_filename_with_metadata(
-            photo, file_size, "metadata",
+            photo,
+            file_size,
+            "metadata",
         )
         photo_path = normalize_file_path(os.path.join(suffix_folder, suffix_basename))
         LOGGER.info(
@@ -212,6 +215,12 @@ def collect_download_task(
     if files is not None:
         with files_lock:
             files.add(photo_path)
+
+    # Check if photo already exists with correct size
+    from src.photo_file_utils import check_photo_exists
+
+    if check_photo_exists(photo, file_size, photo_path):
+        return None
 
     # Check for existing hardlink source
     hardlink_source = None
@@ -252,7 +261,9 @@ def execute_download_task(task_info: DownloadTaskInfo) -> bool:
 
         # Download the photo
         result = download_photo_from_server(
-            task_info.photo, task_info.file_size, task_info.photo_path,
+            task_info.photo,
+            task_info.file_size,
+            task_info.photo_path,
         )
         if result and task_info.hardlink_registry is not None:
             # Register for future hard links if enabled
@@ -271,7 +282,8 @@ def execute_download_task(task_info: DownloadTaskInfo) -> bool:
 
 
 def execute_parallel_downloads(
-    download_tasks: list[DownloadTaskInfo], config,
+    download_tasks: list[DownloadTaskInfo],
+    config,
 ) -> tuple[int, int]:
     """Execute download tasks in parallel using thread pool.
 
@@ -306,10 +318,7 @@ def execute_parallel_downloads(
 
     with ThreadPoolExecutor(max_workers=max_threads) as executor:
         # Submit all download tasks
-        future_to_task = {
-            executor.submit(execute_download_task, task): task
-            for task in download_tasks
-        }
+        future_to_task = {executor.submit(execute_download_task, task): task for task in download_tasks}
 
         # Process completed downloads
         for future in as_completed(future_to_task):

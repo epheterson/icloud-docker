@@ -66,13 +66,7 @@ def collect_file_for_download(
         files.add(local_file)
 
     flatten_packages = (
-        bool(
-            getattr(config_parser, "get_drive_flatten_packages", lambda _c: False)(
-                config
-            )
-        )
-        if config
-        else False
+        bool(getattr(config_parser, "get_drive_flatten_packages", lambda _c: False)(config)) if config else False
     )
 
     # Check local existence FIRST to avoid unnecessary network requests.
@@ -158,9 +152,7 @@ def download_file_task(download_info: dict[str, Any]) -> bool:
         return False
 
 
-def execute_parallel_downloads(
-    download_tasks: list[dict[str, Any]], max_threads: int
-) -> tuple[int, int]:
+def execute_parallel_downloads(download_tasks: list[dict[str, Any]], max_threads: int) -> tuple[int, int]:
     """Execute multiple file downloads in parallel.
 
     Args:
@@ -173,18 +165,14 @@ def execute_parallel_downloads(
     if not download_tasks:
         return 0, 0
 
-    LOGGER.info(
-        f"Starting parallel downloads with {max_threads} threads for {len(download_tasks)} files..."
-    )
+    LOGGER.info(f"Starting parallel downloads with {max_threads} threads for {len(download_tasks)} files...")
 
     successful_downloads = 0
     failed_downloads = 0
 
     with ThreadPoolExecutor(max_workers=max_threads) as executor:
         # Submit all download tasks
-        future_to_task = {
-            executor.submit(download_file_task, task): task for task in download_tasks
-        }
+        future_to_task = {executor.submit(download_file_task, task): task for task in download_tasks}
 
         # Process completed downloads
         for future in as_completed(future_to_task):
@@ -198,7 +186,5 @@ def execute_parallel_downloads(
                 LOGGER.error(f"Download task failed with exception: {e!s}")
                 failed_downloads += 1
 
-    LOGGER.info(
-        f"Parallel downloads completed: {successful_downloads} successful, {failed_downloads} failed"
-    )
+    LOGGER.info(f"Parallel downloads completed: {successful_downloads} successful, {failed_downloads} failed")
     return successful_downloads, failed_downloads

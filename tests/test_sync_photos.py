@@ -1002,8 +1002,7 @@ class TestSyncPhotos(unittest.TestCase):
         # Simulate collect_download_task raising binascii.Error for the bad photo
         # (as icloudpy does when photo.versions triggers filename base64 decoding)
         error_msg = (
-            "Invalid base64-encoded string: number of data characters "
-            "(25) cannot be 1 more than a multiple of 4"
+            "Invalid base64-encoded string: number of data characters (25) cannot be 1 more than a multiple of 4"
         )
 
         def collect_side_effect(photo, *args, **kwargs):
@@ -1011,8 +1010,9 @@ class TestSyncPhotos(unittest.TestCase):
                 raise binascii.Error(error_msg)
             return None  # Good photo already exists, skip
 
-        with patch("src.album_sync_orchestrator.collect_download_task",
-                   side_effect=collect_side_effect) as mock_collect:
+        with patch(
+            "src.album_sync_orchestrator.collect_download_task", side_effect=collect_side_effect
+        ) as mock_collect:
             with self.assertLogs("root", level="WARNING") as log_ctx:
                 tasks = _collect_album_download_tasks(
                     album=album,
@@ -1045,8 +1045,7 @@ class TestSyncPhotos(unittest.TestCase):
         def collect_side_effect(photo, *args, **kwargs):
             raise binascii.Error(error_msg)
 
-        with patch("src.album_sync_orchestrator.collect_download_task",
-                   side_effect=collect_side_effect):
+        with patch("src.album_sync_orchestrator.collect_download_task", side_effect=collect_side_effect):
             with self.assertLogs("root", level="WARNING") as log_ctx:
                 tasks = _collect_photo_download_tasks(
                     photo=MockBadPhotoNoId(),

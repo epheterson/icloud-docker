@@ -113,9 +113,7 @@ def _maybe_warn_trust_expiring(config, api, username: str) -> None:
         )
         if expires_at is None:
             return
-        days_remaining = (
-            expires_at - datetime.datetime.now(tz=datetime.timezone.utc)
-        ).days
+        days_remaining = (expires_at - datetime.datetime.now(tz=datetime.timezone.utc)).days
         threshold = config_parser.get_trust_expiry_warn_days(config=config)
         if days_remaining >= threshold:
             return
@@ -150,21 +148,23 @@ def get_api_instance(
         cookie_directory: Directory to store authentication cookies.
             When ``None`` (the default), resolved late from
             ``src.DEFAULT_COOKIE_DIRECTORY`` so test fixtures that
-            redirect the constant at runtime take effect (the previous
-            ``str = DEFAULT_COOKIE_DIRECTORY`` capture made the default
-            unmockable post-import).
+            redirect the constant at runtime take effect — the previous
+            ``= DEFAULT_COOKIE_DIRECTORY`` default-arg capture made the
+            constant unmockable post-import.
         server_region: Server region ("china" or "global")
 
     Returns:
         Configured ICloudPyService instance
     """
     if cookie_directory is None:
-        # Late-bound import so conftest fixtures that monkey-patch
-        # ``src.DEFAULT_COOKIE_DIRECTORY`` for tests on hosts without
-        # ``/config`` (macOS, sandboxes) actually take effect.
-        import src as _src
+        # Read through the src module so monkey-patches of
+        # ``src.DEFAULT_COOKIE_DIRECTORY`` (e.g. by tests/conftest.py)
+        # are honoured. ``src`` is this function's parent package and
+        # already imported; using ``sys.modules`` avoids a per-call
+        # ``import src`` and makes the data flow explicit.
+        import sys
 
-        cookie_directory = _src.DEFAULT_COOKIE_DIRECTORY
+        cookie_directory = sys.modules["src"].DEFAULT_COOKIE_DIRECTORY
     return (
         ICloudPyService(
             apple_id=username,
@@ -579,11 +579,7 @@ def _perform_dry_run(config, api, check_files: int | None = None) -> None:
                 config=config,
             )
             LOGGER.info(f"DRY RUN: Photos destination: {photos_destination}")
-            libraries = (
-                list(api.photos.libraries.keys())
-                if hasattr(api.photos, "libraries")
-                else []
-            )
+            libraries = list(api.photos.libraries.keys()) if hasattr(api.photos, "libraries") else []
             if libraries:
                 LOGGER.info(
                     f"DRY RUN: Photos libraries available: {', '.join(libraries)}",
@@ -703,9 +699,7 @@ def _send_usage_statistics(config, summary: SyncSummary) -> None:
     # Create anonymized usage data
     usage_data = {
         "sync_duration": (
-            (summary.sync_end_time - summary.sync_start_time).total_seconds()
-            if summary.sync_end_time
-            else 0
+            (summary.sync_end_time - summary.sync_start_time).total_seconds() if summary.sync_end_time else 0
         ),
         "has_drive_activity": bool(
             summary.drive_stats and summary.drive_stats.has_activity(),
@@ -714,9 +708,7 @@ def _send_usage_statistics(config, summary: SyncSummary) -> None:
             summary.photo_stats and summary.photo_stats.has_activity(),
         ),
         "has_errors": summary.has_errors(),
-        "timestamp": (
-            summary.sync_end_time.isoformat() if summary.sync_end_time else None
-        ),
+        "timestamp": (summary.sync_end_time.isoformat() if summary.sync_end_time else None),
     }
 
     # Add aggregated statistics (no personal data)
@@ -819,8 +811,7 @@ def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
     auth_keyword = config_parser.get_telegram_auth_keyword(config=config)
     if not bot_token or not chat_id:
         LOGGER.warning(
-            "Telegram listen enabled but bot_token/chat_id not configured; "
-            "falling back to plain sleep.",
+            "Telegram listen enabled but bot_token/chat_id not configured; falling back to plain sleep.",
         )
         sleep(timeout_seconds)
         return False
@@ -832,8 +823,7 @@ def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
         "code to your Apple devices; then reply the 6-digit code here.",
     )
     LOGGER.info(
-        f"Listening on Telegram for '{auth_keyword}' trigger or 6-digit code "
-        f"(timeout {timeout_seconds}s).",
+        f"Listening on Telegram for '{auth_keyword}' trigger or 6-digit code (timeout {timeout_seconds}s).",
     )
     elapsed = 0
     while elapsed < timeout_seconds:
@@ -864,8 +854,7 @@ def _wait_for_telegram_code(config, api, timeout_seconds: int) -> bool:
                 (
                     "✅ 2FA code sent to your Apple devices -- reply the 6-digit code here."
                     if pushed
-                    else "⚠️ Couldn't request a code (no trusted device, or auth state off). "
-                    "Try icloud.zosia.io/auth."
+                    else "⚠️ Couldn't request a code (no trusted device, or auth state off). Try icloud.zosia.io/auth."
                 ),
             )
             continue
@@ -946,9 +935,7 @@ def _log_retry_time(sleep_for: int):
     Args:
         sleep_for: Sleep duration in seconds
     """
-    next_sync = (
-        datetime.datetime.now() + datetime.timedelta(seconds=sleep_for)
-    ).strftime("%c")
+    next_sync = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_for)).strftime("%c")
     LOGGER.info(f"Retrying login at {next_sync} ...")
 
 
@@ -977,24 +964,15 @@ def _calculate_next_sync_schedule(config, sync_state: SyncState):
         sleep_for = sync_state.drive_time_remaining
         sync_state.enable_sync_drive = True
         sync_state.enable_sync_photos = False
-    elif (
-        has_drive
-        and has_photos
-        and sync_state.drive_time_remaining <= sync_state.photos_time_remaining
-    ):
+    elif has_drive and has_photos and sync_state.drive_time_remaining <= sync_state.photos_time_remaining:
         # Special case: if both timers are equal and large (> 10 seconds), wait for the full interval
         # This fixes the bug where equal large intervals cause immediate re-sync
-        if (
-            sync_state.drive_time_remaining == sync_state.photos_time_remaining
-            and sync_state.drive_time_remaining > 10
-        ):
+        if sync_state.drive_time_remaining == sync_state.photos_time_remaining and sync_state.drive_time_remaining > 10:
             sleep_for = sync_state.drive_time_remaining
             sync_state.enable_sync_drive = True
             sync_state.enable_sync_photos = True
         else:
-            sleep_for = (
-                sync_state.photos_time_remaining - sync_state.drive_time_remaining
-            )
+            sleep_for = sync_state.photos_time_remaining - sync_state.drive_time_remaining
             sync_state.photos_time_remaining -= sync_state.drive_time_remaining
             sync_state.enable_sync_drive = True
             sync_state.enable_sync_photos = False
@@ -1014,9 +992,7 @@ def _log_next_sync_time(sleep_for: int):
     Args:
         sleep_for: Sleep duration in seconds
     """
-    next_sync = (
-        datetime.datetime.now() + datetime.timedelta(seconds=sleep_for)
-    ).strftime("%c")
+    next_sync = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_for)).strftime("%c")
     LOGGER.info(f"Resyncing at {next_sync} ...")
 
 
@@ -1201,9 +1177,7 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                     should_send_notification = False
                     if has_drive_config and has_photos_config:
                         # Both services configured - send notification only when both have synced
-                        should_send_notification = (
-                            drive_stats is not None and photos_stats is not None
-                        )
+                        should_send_notification = drive_stats is not None and photos_stats is not None
                     elif has_drive_config and not has_photos_config:
                         # Only drive configured - send when drive synced
                         should_send_notification = drive_stats is not None

@@ -120,13 +120,10 @@ class TestPartialCloudkitRecordSafe(unittest.TestCase):
         photo.filename = "IMG_9999.HEIC"
         photo.id = "xyz"
         # Make photo.versions raise
-        type(photo).versions = property(
-            lambda self: (_ for _ in ()).throw(RuntimeError("broken record"))
-        )
+        type(photo).versions = property(lambda self: (_ for _ in ()).throw(RuntimeError("broken record")))
         # Should not raise; should return normal name without .bak
         name = generate_photo_filename_with_metadata(photo, "original")
         assert not name.endswith(".bak"), f"got {name!r}"
-
 
 
 class TestFilenameFormatSimplePlusBak(unittest.TestCase):
@@ -141,16 +138,19 @@ class TestFilenameFormatSimplePlusBak(unittest.TestCase):
 
     def setUp(self):
         from src.photo_path_utils import set_default_filename_format
+
         set_preserve_originals_as_bak(True)
         set_default_filename_format("simple")
 
     def tearDown(self):
         from src.photo_path_utils import set_default_filename_format
+
         set_preserve_originals_as_bak(False)
         set_default_filename_format("metadata")
 
     def test_simple_plus_bak_edited_photo_gets_bak_suffix(self):
         from src.photo_path_utils import generate_photo_filename_with_metadata
+
         photo = _photo_with_alt("IMG_1234.HEIC", "abc")
         name = generate_photo_filename_with_metadata(photo, "original")
         # Simple format + bak suffix → IMG_1234.HEIC.original.bak
@@ -158,6 +158,7 @@ class TestFilenameFormatSimplePlusBak(unittest.TestCase):
 
     def test_simple_plus_bak_unedited_photo_plain(self):
         from src.photo_path_utils import generate_photo_filename_with_metadata
+
         photo = _photo_unedited("IMG_5678.HEIC", "def")
         name = generate_photo_filename_with_metadata(photo, "original")
         # Unedited → no .bak, plain simple name
@@ -165,6 +166,7 @@ class TestFilenameFormatSimplePlusBak(unittest.TestCase):
 
     def test_simple_plus_bak_alt_visible_plain(self):
         from src.photo_path_utils import generate_photo_filename_with_metadata
+
         photo = _photo_with_alt("IMG_1234.HEIC", "abc")
         name = generate_photo_filename_with_metadata(photo, "original_alt")
         # Alt is the visible file — no .bak. Extension comes from alt mapping.

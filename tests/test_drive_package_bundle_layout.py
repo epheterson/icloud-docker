@@ -69,9 +69,7 @@ class TestSelfPrefixedZipExtractsIntoParent(unittest.TestCase):
             self.assertEqual(result, local_file)
             self.assertTrue(os.path.isdir(local_file))
             self.assertTrue(os.path.isfile(os.path.join(local_file, "projectData")))
-            self.assertTrue(
-                os.path.isfile(os.path.join(local_file, "Resources", "Info.plist"))
-            )
+            self.assertTrue(os.path.isfile(os.path.join(local_file, "Resources", "Info.plist")))
 
 
 class TestBareRootedZipExtractsIntoBundleSubdir(unittest.TestCase):
@@ -94,14 +92,8 @@ class TestBareRootedZipExtractsIntoBundleSubdir(unittest.TestCase):
             result = drive_package_processing.process_package(local_file=local_file)
             self.assertEqual(result, local_file)
             self.assertTrue(os.path.isdir(local_file))
-            self.assertTrue(
-                os.path.isfile(os.path.join(local_file, "Data", "Document.iwa"))
-            )
-            self.assertTrue(
-                os.path.isfile(
-                    os.path.join(local_file, "Metadata", "buildVersion.plist")
-                )
-            )
+            self.assertTrue(os.path.isfile(os.path.join(local_file, "Data", "Document.iwa")))
+            self.assertTrue(os.path.isfile(os.path.join(local_file, "Metadata", "buildVersion.plist")))
             # The bare names did NOT escape into the parent dir.
             self.assertFalse(os.path.exists(os.path.join(base, "Data")))
             self.assertFalse(os.path.exists(os.path.join(base, "Metadata")))
@@ -132,9 +124,7 @@ class TestBareRootedZipExtractsIntoBundleSubdir(unittest.TestCase):
             # Both bundles exist as independent directories with the same
             # internal structure; neither clobbered the other.
             self.assertTrue(os.path.isfile(os.path.join(first, "Data", "Document.iwa")))
-            self.assertTrue(
-                os.path.isfile(os.path.join(second, "Data", "Document.iwa"))
-            )
+            self.assertTrue(os.path.isfile(os.path.join(second, "Data", "Document.iwa")))
 
 
 class TestFlattenPackagesSkipsUnpack(unittest.TestCase):
@@ -154,9 +144,7 @@ class TestFlattenPackagesSkipsUnpack(unittest.TestCase):
             # Snapshot the original bytes so we can compare after.
             original_size = os.path.getsize(local_file)
 
-            result = drive_package_processing.process_package(
-                local_file=local_file, flatten=True
-            )
+            result = drive_package_processing.process_package(local_file=local_file, flatten=True)
             self.assertEqual(result, local_file)
             self.assertTrue(os.path.isfile(local_file))
             # Bytes are unchanged — no rename, no unpack.
@@ -174,9 +162,7 @@ class TestFlattenPackagesSkipsUnpack(unittest.TestCase):
             with open(local_file, "wb") as f:
                 f.write(b"opaque-bundle-bytes-no-magic")
 
-            result = drive_package_processing.process_package(
-                local_file=local_file, flatten=True
-            )
+            result = drive_package_processing.process_package(local_file=local_file, flatten=True)
             self.assertEqual(result, local_file)
             self.assertTrue(os.path.isfile(local_file))
 

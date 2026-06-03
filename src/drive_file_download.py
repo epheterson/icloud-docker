@@ -19,9 +19,7 @@ configure_icloudpy_logging()
 LOGGER = get_logger()
 
 
-def download_file(
-    item: Any, local_file: str, flatten_packages: bool = False
-) -> str | None:
+def download_file(item: Any, local_file: str, flatten_packages: bool = False) -> str | None:
     """Download a file from iCloud to local filesystem.
 
     This function handles the actual download of files from iCloud, including
@@ -61,9 +59,7 @@ def download_file(
             # but no longer treat "couldn't unpack" as failure when the
             # downloaded bytes are intact.
             if response.url and "/packageDownload?" in response.url:
-                processed_file = process_package(
-                    local_file=local_file, flatten=flatten_packages
-                )
+                processed_file = process_package(local_file=local_file, flatten=flatten_packages)
                 if processed_file is None:
                     return None
                 local_file = processed_file

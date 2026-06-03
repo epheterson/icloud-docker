@@ -95,17 +95,12 @@ def _create_trust_expiring_message(
     Returns:
         Tuple of (message, subject)
     """
-    horizon = (
-        "today"
-        if days_remaining <= 0
-        else f"in {days_remaining} day{'s' if days_remaining != 1 else ''}"
-    )
+    horizon = "today" if days_remaining <= 0 else f"in {days_remaining} day{'s' if days_remaining != 1 else ''}"
     if dashboard_url:
         message = f"{title}: iCloud login expires {horizon}, refresh at {dashboard_url}"
     else:
         message = (
-            f"{title}: iCloud login expires {horizon}. "
-            f"Sign in to the container to refresh before the next sync fails."
+            f"{title}: iCloud login expires {horizon}. Sign in to the container to refresh before the next sync fails."
         )
     subject = f"{title}: iCloud login for {username} expires {horizon}"
     return message, subject
@@ -485,9 +480,7 @@ def notify_email(config, message: str, subject: str, last_send=None, dry_run=Fal
         LOGGER.info("Throttling email to once a day")
         return last_send
 
-    email, to_email, host, port, no_tls, username, password, is_configured = (
-        _get_smtp_config(config)
-    )
+    email, to_email, host, port, no_tls, username, password, is_configured = _get_smtp_config(config)
     if not is_configured:
         LOGGER.warning("Not sending 2FA notification because SMTP is not configured")
         return None
@@ -574,11 +567,7 @@ def send(
     )
 
     # Return the timestamp if any notification was sent successfully
-    sent_timestamps = [
-        t
-        for t in [telegram_sent, discord_sent, pushover_sent, email_sent]
-        if t is not None
-    ]
+    sent_timestamps = [t for t in [telegram_sent, discord_sent, pushover_sent, email_sent] if t is not None]
     return sent_timestamps[0] if sent_timestamps else None
 
 
@@ -644,11 +633,7 @@ def send_trust_expiring(
         last_send=last_send,
         dry_run=dry_run,
     )
-    sent_timestamps = [
-        t
-        for t in [telegram_sent, discord_sent, pushover_sent, email_sent]
-        if t is not None
-    ]
+    sent_timestamps = [t for t in [telegram_sent, discord_sent, pushover_sent, email_sent] if t is not None]
     return sent_timestamps[0] if sent_timestamps else None
 
 
@@ -1026,9 +1011,7 @@ def _send_email_no_throttle(config, message: str, subject: str, dry_run: bool) -
     Returns:
         True if sent successfully, False otherwise
     """
-    email, to_email, host, port, no_tls, username, password, is_configured = (
-        _get_smtp_config(config)
-    )
+    email, to_email, host, port, no_tls, username, password, is_configured = _get_smtp_config(config)
     if not is_configured:
         return False
 

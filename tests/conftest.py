@@ -7,13 +7,13 @@ Two autouse fixtures:
    unset it don't bleed into later tests (the variable is set by the
    runner, not by tests).
 
-2. ``_redirect_config_dir`` — point ``ICLOUD_DOCKER_CONFIG_DIR`` at a
-   writable tempdir for the whole session. The container's ``/config``
-   mount doesn't exist on dev hosts (macOS especially — read-only
-   root). Without this redirect, ``src.usage.CACHE_FILE_NAME`` and
-   ``src.DEFAULT_COOKIE_DIRECTORY`` (which both derive from
-   ``ICLOUD_DOCKER_CONFIG_DIR``) point at ``/config/...`` paths that
-   can't be created, and a swath of tests fail with FileNotFoundError.
+2. ``_redirect_config_dir`` — session-wide redirect of
+   ``ICLOUD_DOCKER_CONFIG_DIR`` to a writable tempdir. The container's
+   ``/config`` mount doesn't exist on dev hosts (macOS especially —
+   read-only root). Without this redirect, the suite hits
+   FileNotFoundError on ``/config/.data`` (usage cache) and
+   ``/config/session_data`` (icloudpy cookie dir), and a swath of tests
+   fail despite the production code being correct.
 """
 
 __author__ = "Mandar Patil (mandarons@pm.me)"
@@ -42,36 +42,53 @@ def _restore_env_config_file_path():
 
 @pytest.fixture(scope="session", autouse=True)
 def _redirect_config_dir():
-    """Session-wide ``ICLOUD_DOCKER_CONFIG_DIR`` → tempdir so the test
-    suite can write usage cache + session_data on hosts where
-    ``/config`` isn't writable (macOS dev hosts, CI sandboxes, etc).
+    """Session-wide ``ICLOUD_DOCKER_CONFIG_DIR`` → tempdir.
 
-    The redirect MUST be set before any ``from src import ...`` happens
-    at module-import time (because ``DEFAULT_COOKIE_DIRECTORY`` is
-    captured at import). Pytest collects conftest first, so this fires
-    early — but we also import ``src`` here to force re-evaluation in
-    case it was already imported by an earlier conftest.
+    Implementation note: the ``os.environ`` setting alone is NOT what
+    makes the redirect work. ``DEFAULT_COOKIE_DIRECTORY`` and
+    ``CACHE_FILE_NAME`` are captured at module-import time, and by the
+    time this autouse fixture runs (first test execution) the test
+    modules have already done ``from src import ...`` and the constants
+    have already resolved to ``/config/...``. The reassignment of
+    ``src.DEFAULT_COOKIE_DIRECTORY`` / ``src.usage.CACHE_FILE_NAME``
+    below is what actually redirects callers. The env-var set is kept
+    only so child processes (if any) inherit the override. Future
+    contributors who add a new module that captures
+    ``ICLOUD_DOCKER_CONFIG_DIR`` at import time MUST add a matching
+    reassignment here.
     """
-    if _CONFIG_DIR_KEY in os.environ:
-        # Honor explicit caller override (e.g. CI integration tests).
-        yield
-        return
+    # Resolve the target config dir: external override if the caller
+    # set it (e.g. CI integration tests), otherwise a fresh tempdir.
+    # Note the cleanup contract differs: we never rmtree an externally
+    # supplied dir, only the tempdir we created ourselves.
+    external = _CONFIG_DIR_KEY in os.environ
+    tmpdir = os.environ[_CONFIG_DIR_KEY] if external else tempfile.mkdtemp(prefix="icloud_test_config_")
+    if not external:
+        os.environ[_CONFIG_DIR_KEY] = tmpdir
 
-    tmpdir = tempfile.mkdtemp(prefix="icloud_test_config_")
-    os.environ[_CONFIG_DIR_KEY] = tmpdir
-
-    # Force re-evaluation of cached module-level constants that captured
-    # the original "/config" path before we set the env var.
+    # The constants were captured at import time; re-sync them to the
+    # resolved dir whether it came from env override or the tempdir.
+    # Without this re-sync on the override path, the same
+    # FileNotFoundError chain this fixture exists to prevent would
+    # resurface (callers would still read /config-resolved paths from
+    # the captured constants).
     import src
     import src.usage
 
     src.DEFAULT_COOKIE_DIRECTORY = os.path.join(tmpdir, "session_data")
     src.usage.CACHE_FILE_NAME = os.path.join(tmpdir, ".data")
-    os.makedirs(src.DEFAULT_COOKIE_DIRECTORY, exist_ok=True)
+    # NOTE: we deliberately do NOT pre-create ``session_data/`` here.
+    # ``tests/test_sync.py::test_sync`` asserts that ``sync.sync()``
+    # itself creates the directory on first run; pre-creating would
+    # make that assertion trivially pass regardless of whether the
+    # production code path actually ran.
     try:
         yield
     finally:
-        import shutil
+        # Only clean up if WE owned the tempdir — leave externally-
+        # supplied dirs (CI mounts, user-managed paths) intact.
+        if not external:
+            import shutil
 
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        os.environ.pop(_CONFIG_DIR_KEY, None)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            os.environ.pop(_CONFIG_DIR_KEY, None)

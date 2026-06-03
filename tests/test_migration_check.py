@@ -180,9 +180,7 @@ class TestCheckDrive(unittest.TestCase):
     def test_empty_drive(self):
         with tempfile.TemporaryDirectory() as base:
             drive = _fake_drive_folder("root", {})
-            result = migration_check.check_drive(
-                drive=drive, drive_destination=base, sample=0
-            )
+            result = migration_check.check_drive(drive=drive, drive_destination=base, sample=0)
             self.assertEqual(result["checked"], 0)
             self.assertEqual(result["stats"]["would_skip"], 0)
             self.assertEqual(result["stats"]["not_found"], 0)
@@ -201,9 +199,7 @@ class TestCheckDrive(unittest.TestCase):
                     "c.txt": _fake_drive_file("c.txt", 300),
                 },
             )
-            result = migration_check.check_drive(
-                drive=drive, drive_destination=base, sample=0
-            )
+            result = migration_check.check_drive(drive=drive, drive_destination=base, sample=0)
             self.assertEqual(result["stats"]["would_skip"], 3)
             self.assertEqual(result["stats"]["size_mismatch"], 0)
             self.assertEqual(result["stats"]["not_found"], 0)
@@ -224,9 +220,7 @@ class TestCheckDrive(unittest.TestCase):
                     "c.txt": _fake_drive_file("c.txt", 300),
                 },
             )
-            result = migration_check.check_drive(
-                drive=drive, drive_destination=base, sample=0
-            )
+            result = migration_check.check_drive(drive=drive, drive_destination=base, sample=0)
             self.assertEqual(result["stats"]["would_skip"], 1)
             self.assertEqual(result["stats"]["size_mismatch"], 1)
             self.assertEqual(result["stats"]["not_found"], 1)
@@ -241,13 +235,9 @@ class TestCheckDrive(unittest.TestCase):
             os.makedirs(os.path.join(base, "sub"))
             with open(os.path.join(base, "sub", "leaf.txt"), "wb") as f:
                 f.write(b"x" * 42)
-            sub_folder = _fake_drive_folder(
-                "sub", {"leaf.txt": _fake_drive_file("leaf.txt", 42)}
-            )
+            sub_folder = _fake_drive_folder("sub", {"leaf.txt": _fake_drive_file("leaf.txt", 42)})
             drive = _fake_drive_folder("root", {"sub": sub_folder})
-            result = migration_check.check_drive(
-                drive=drive, drive_destination=base, sample=0
-            )
+            result = migration_check.check_drive(drive=drive, drive_destination=base, sample=0)
             self.assertEqual(result["stats"]["would_skip"], 1)
             self.assertEqual(result["checked"], 1)
 
@@ -262,24 +252,16 @@ class TestCheckDrive(unittest.TestCase):
                 f.write(b"x" * 50)
             with open(os.path.join(pkg_path, "projectdata"), "wb") as f:
                 f.write(b"x" * 100)
-            drive = _fake_drive_folder(
-                "root", {"Project.band": _fake_drive_file("Project.band", 150)}
-            )
-            result = migration_check.check_drive(
-                drive=drive, drive_destination=base, sample=0
-            )
+            drive = _fake_drive_folder("root", {"Project.band": _fake_drive_file("Project.band", 150)})
+            result = migration_check.check_drive(drive=drive, drive_destination=base, sample=0)
             self.assertEqual(result["stats"]["would_skip"], 1)
             self.assertEqual(result["stats"]["size_mismatch"], 0)
 
     def test_sample_caps_drive_walk_at_N(self):
         with tempfile.TemporaryDirectory() as base:
-            children = {
-                f"f{i}.txt": _fake_drive_file(f"f{i}.txt", 100) for i in range(20)
-            }
+            children = {f"f{i}.txt": _fake_drive_file(f"f{i}.txt", 100) for i in range(20)}
             drive = _fake_drive_folder("root", children)
-            result = migration_check.check_drive(
-                drive=drive, drive_destination=base, sample=5
-            )
+            result = migration_check.check_drive(drive=drive, drive_destination=base, sample=5)
             self.assertEqual(result["checked"], 5)
 
 
