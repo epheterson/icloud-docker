@@ -80,6 +80,12 @@ photos:
   all_albums: false # Optional, default false. If true preserve album structure. If same photo is in multiple albums creates duplicates on filesystem
   use_hardlinks: false # Optional, default false. If true and all_albums is true, create hard links for duplicate photos instead of separate copies. Saves storage space.
   # folder_format: "%Y/%m" # optional, if set put photos in subfolders according to format. Format cheatsheet - https://strftime.org
+  # One-shot cleanup for libraries synced by an older version that wrote Live
+  # Photo paired videos (live_video_*) with the still's extension (e.g. .HEIC)
+  # instead of .MOV. Renames those existing files to .MOV so photo managers see
+  # them as videos and pair them to the still. Idempotent; only touches files
+  # confirmed to be QuickTime movies. Values: off (default), dry-run, apply.
+  # migrate_mislabeled_live_videos: off
   filters:
     # List of libraries to download. If omitted (default), photos from all libraries (own and shared) are downloaded. If included, photos only
     # from the listed libraries are downloaded.

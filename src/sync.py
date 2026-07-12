@@ -15,6 +15,7 @@ from src import (
     config_parser,
     configure_icloudpy_logging,
     get_logger,
+    live_photo_migration,
     notify,
     read_config,
     sync_drive,
@@ -537,6 +538,22 @@ def _should_exit_oneshot_mode(config):
     return should_exit_drive and should_exit_photos
 
 
+def _run_live_photo_migration_if_configured(config):
+    """Run the one-shot mislabeled Live Photo video migration if enabled.
+
+    Renames pre-existing ``.HEIC``-labeled Live Photo videos to ``.MOV`` once at
+    startup. No-op unless ``photos.migrate_mislabeled_live_videos`` is set to
+    ``dry-run`` or ``apply``. Idempotent, so it is safe on every restart.
+    """
+    if not config or "photos" not in config:
+        return
+    mode = config_parser.get_photos_migrate_mislabeled_live_videos(config)
+    if mode == "off":
+        return
+    destination = config_parser.get_photos_destination_path(config)
+    live_photo_migration.run_migration([destination], mode)
+
+
 def sync():
     """
     Main synchronization loop.
@@ -555,6 +572,7 @@ def sync():
         # Log sync intervals once at startup
         if not startup_logged:
             _log_sync_intervals_at_startup(config)
+            _run_live_photo_migration_if_configured(config)
             startup_logged = True
 
         drive_sync_interval, photos_sync_interval = _extract_sync_intervals(config, log_messages=False)
