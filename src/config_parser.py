@@ -829,7 +829,7 @@ def get_photos_require_mount_marker(config: dict) -> bool:
     the Photos destination directory. Protects against silent bind-mount
     failures dumping the entire iCloud photo library into the wrong place.
 
-    Default: False (preserves historical behaviour — no breaking change).
+    Default: False (preserves historical behaviour - no breaking change).
 
     Args:
         config: Configuration dictionary
@@ -845,6 +845,33 @@ def get_photos_require_mount_marker(config: dict) -> bool:
             default=False,
         ),
     )
+
+
+def get_photos_migrate_mislabeled_live_videos(config: dict) -> str:
+    """Return the mislabeled Live Photo video migration mode from config.
+
+    Earlier releases wrote Live Photo paired videos with the still's extension
+    (e.g. ``.HEIC``) instead of ``.MOV``. This one-shot migration renames those
+    existing files. It is opt-in and off by default because it mutates files.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        One of ``off`` (default), ``dry-run``, or ``apply``.
+    """
+    config_path = ["photos", "migrate_mislabeled_live_videos"]
+    mode = get_config_value_or_default(config=config, config_path=config_path, default="off")
+    mode = str(mode).strip().lower()
+
+    valid = {"off", "dry-run", "apply"}
+    if mode not in valid:
+        LOGGER.warning(
+            f"Invalid photos.migrate_mislabeled_live_videos: {mode!r}. "
+            f"Expected one of {sorted(valid)}. Defaulting to 'off'.",
+        )
+        return "off"
+    return mode
 
 
 def get_photos_folder_format(config: dict) -> str | None:
