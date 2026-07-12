@@ -550,7 +550,7 @@ def _run_live_photo_migration_if_configured(config):
     mode = config_parser.get_photos_migrate_mislabeled_live_videos(config)
     if mode == "off":
         return
-    destination = config_parser.get_photos_destination_path(config)
+    destination = config_parser.prepare_photos_destination(config)
     live_photo_migration.run_migration([destination], mode)
 
 
