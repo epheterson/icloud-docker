@@ -19,6 +19,9 @@ from src.photo_path_utils import (
 _FTYP_QUICKTIME = b"\x00\x00\x00\x18ftypqt  \x00\x00\x02\x00qt  "
 _FTYP_MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
 _FTYP_HEIC = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic"
+# A classic QuickTime movie with NO ftyp box: wide atom + mdat (what iOS
+# Live Photo videos commonly look like).
+_QT_NO_FTYP = b"\x00\x00\x00\x08wide\x00\x27\x5c\x13mdat"
 
 
 def _photo(filename, versions):
@@ -69,6 +72,12 @@ class TestClassifyLiveVideo:
         f.write_bytes(_FTYP_MP4)
         assert live_photo_migration.classify_live_video(str(f)) == "MP4"
 
+    def test_ftypless_quicktime_is_mov(self, tmp_path):
+        # iOS Live Photo movies often have no ftyp box (wide + mdat atoms).
+        f = tmp_path / "v.bin"
+        f.write_bytes(_QT_NO_FTYP)
+        assert live_photo_migration.classify_live_video(str(f)) == "MOV"
+
     def test_heic_image_is_none(self, tmp_path):
         f = tmp_path / "i.bin"
         f.write_bytes(_FTYP_HEIC)
@@ -77,6 +86,11 @@ class TestClassifyLiveVideo:
     def test_non_ftyp_is_none(self, tmp_path):
         f = tmp_path / "j.bin"
         f.write_bytes(b"\xff\xd8\xff\xe0JFIF")
+        assert live_photo_migration.classify_live_video(str(f)) is None
+
+    def test_truncated_file_is_none(self, tmp_path):
+        f = tmp_path / "v.bin"
+        f.write_bytes(b"\x00\x00")  # fewer than 8 bytes
         assert live_photo_migration.classify_live_video(str(f)) is None
 
     def test_unreadable_is_none(self, tmp_path):

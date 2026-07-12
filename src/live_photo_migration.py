@@ -61,43 +61,42 @@ _IMAGE_BRANDS = frozenset(
         "avis",
     },
 )
-# Major brands that specifically map to an .MP4 container; everything else that
-# is a movie is QuickTime (the Live Photo default).
+# Major brands that specifically map to an .MP4 container; everything else with
+# an ftyp box is treated as QuickTime (the Live Photo default).
 _MP4_MAJOR_BRANDS = frozenset({"mp41", "mp42", "isom", "iso2", "m4v ", "avc1", "3gp4", "3gp5"})
 
-
-def _read_ftyp_brands(path: str) -> list[str] | None:
-    """Return the major + compatible brands from a file's ``ftyp`` box, or None.
-
-    Reads only the leading 64 bytes: enough for the major brand and a dozen
-    compatible brands. Returns None for anything that is not ftyp-led.
-    """
-    try:
-        with open(path, "rb") as handle:
-            head = handle.read(64)
-    except OSError:
-        return None
-    if len(head) < 12 or head[4:8] != b"ftyp":
-        return None
-    brands = [head[8:12].decode("latin-1")]
-    brands.extend(head[off : off + 4].decode("latin-1") for off in range(16, len(head) - 3, 4))
-    return brands
+# Top-level QuickTime atoms. Many iOS Live Photo movies carry NO ftyp box and
+# start straight with one of these (commonly ``wide`` + ``mdat``), so an
+# ftyp-only check would miss them.
+_QUICKTIME_ATOMS = frozenset({"moov", "mdat", "wide", "free", "skip", "pnot"})
 
 
 def classify_live_video(path: str) -> str | None:
     """Return the correct video extension for a mislabeled live-video file.
 
     Returns ``"MOV"`` or ``"MP4"`` for a movie, or None if the file is a genuine
-    HEIF/AVIF image (or not an ISO-BMFF file at all), in which case it must be
-    left alone. Defaults an unrecognized movie brand to ``MOV`` rather than
-    skipping, since Live Photo motion videos are QuickTime.
+    HEIF/AVIF image (or not a recognized movie at all), in which case it must be
+    left alone. Reads the first top-level box: an ``ftyp`` box's brands
+    distinguish image vs MP4 vs QuickTime; a bare QuickTime atom (``wide`` /
+    ``mdat`` / ``moov`` ...) means a ftyp-less QuickTime movie.
     """
-    brands = _read_ftyp_brands(path)
-    if brands is None:
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(64)
+    except OSError:
         return None
-    if any(b in _IMAGE_BRANDS for b in brands):
+    if len(head) < 8:
         return None
-    return "MP4" if brands[0] in _MP4_MAJOR_BRANDS else "MOV"
+    atom = head[4:8].decode("latin-1")
+    if atom == "ftyp":
+        brands = [head[8:12].decode("latin-1")]
+        brands.extend(head[off : off + 4].decode("latin-1") for off in range(16, len(head) - 3, 4))
+        if any(b in _IMAGE_BRANDS for b in brands):
+            return None
+        return "MP4" if brands[0] in _MP4_MAJOR_BRANDS else "MOV"
+    if atom in _QUICKTIME_ATOMS:
+        return "MOV"
+    return None
 
 
 def _looks_like_mislabeled_live_video(filename: str) -> bool:
