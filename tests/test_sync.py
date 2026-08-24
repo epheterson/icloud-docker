@@ -1402,3 +1402,123 @@ class TestServiceUnavailableIsNotASigninFailure(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 sync.sync()
         self.assertGreaterEqual(slept.call_count, 1)
+
+
+class TestPostAuthFailuresAreNotSigninFailures(unittest.TestCase):
+    """Errors raised once ``api`` exists are service faults, not auth faults.
+
+    The sync loop wraps authentication and the whole sync in one ``try``, so
+    without routing on "did we get past sign-in" a 5xx on a photo download is
+    reported to the user as a sign-in failure and earns the rate-limit
+    backoff. Worse, every handler ends in ``continue``, which skips
+    ``_calculate_next_sync_schedule`` -- the countdown timers never advance,
+    so the short login-retry interval re-enumerates the entire library."""
+
+    def _config(self, retry=600, drive_interval=43200):
+        return {
+            "app": {"credentials": {"username": "a@icloud.com", "retry_login_interval": retry}},
+            "drive": {"destination": "drive", "sync_interval": drive_interval},
+        }
+
+    def test_failure_after_signin_does_not_use_the_auth_backoff(self):
+        from unittest.mock import MagicMock, patch
+
+        from icloudpy import exceptions
+
+        from src import sync
+
+        api = MagicMock()
+        api.requires_2sa = False
+        error = exceptions.ICloudPyAPIResponseException("500 Server Error")
+        with (
+            patch.object(sync, "_load_configuration", return_value=self._config(retry=-1)),
+            patch.object(sync, "alive"),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(sync, "_authenticate_and_get_api", return_value=api),
+            patch.object(sync, "_maybe_warn_trust_expiring"),
+            patch.object(sync, "_perform_drive_sync", side_effect=error),
+            patch.object(sync, "_handle_auth_transport_error") as auth_handler,
+            patch("src.config_parser.get_username", return_value="a@icloud.com"),
+        ):
+            sync.sync()
+        auth_handler.assert_not_called()
+
+    def test_failure_before_signin_still_uses_the_auth_backoff(self):
+        """The throttle case must keep its long floor."""
+        from unittest.mock import patch
+
+        from icloudpy import exceptions
+
+        from src import sync
+
+        error = exceptions.ICloudPyAPIResponseException("409 Conflict")
+        with (
+            patch.object(sync, "_load_configuration", return_value=self._config()),
+            patch.object(sync, "alive"),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(sync, "_authenticate_and_get_api", side_effect=error),
+            patch.object(sync, "_handle_auth_transport_error", return_value=False) as auth_handler,
+            patch("src.config_parser.get_username", return_value="a@icloud.com"),
+        ):
+            sync.sync()
+        auth_handler.assert_called_once()
+
+    def test_retry_never_polls_faster_than_the_sync_interval(self):
+        """A broken service must not be polled faster than a working one."""
+        from unittest.mock import patch
+
+        from src import sync
+
+        with patch.object(sync, "sleep") as slept:
+            kept_looping = sync._handle_sync_error(  # noqa: SLF001
+                self._config(retry=600, drive_interval=43200),
+                Exception("boom"),
+                43200,
+                -1,
+            )
+        self.assertTrue(kept_looping)
+        slept.assert_called_once_with(43200)
+
+    def test_retry_falls_back_to_the_login_interval_when_nothing_is_configured(self):
+        from unittest.mock import patch
+
+        from src import sync
+
+        with patch.object(sync, "sleep") as slept:
+            sync._handle_sync_error(  # noqa: SLF001
+                self._config(retry=600), Exception("boom"), -1, -1,
+            )
+        slept.assert_called_once_with(600)
+
+    def test_negative_retry_interval_exits(self):
+        from src import sync
+
+        self.assertFalse(
+            sync._handle_sync_error(  # noqa: SLF001
+                self._config(retry=-1), Exception("boom"), 43200, -1,
+            ),
+        )
+    def test_the_loop_continues_after_a_post_signin_failure(self):
+        """A service fault is retried, not fatal: the daemon keeps running."""
+        from unittest.mock import MagicMock, patch
+
+        from icloudpy import exceptions
+
+        from src import sync
+
+        api = MagicMock()
+        api.requires_2sa = False
+        error = exceptions.ICloudPyAPIResponseException("500 Server Error")
+        with (
+            patch.object(sync, "_load_configuration", return_value=self._config()),
+            patch.object(sync, "alive"),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(sync, "_authenticate_and_get_api", return_value=api),
+            patch.object(sync, "_maybe_warn_trust_expiring"),
+            patch.object(sync, "_perform_drive_sync", side_effect=error),
+            # True keeps the loop alive for a second pass, False ends the test.
+            patch.object(sync, "_handle_sync_error", side_effect=[True, False]) as handler,
+            patch("src.config_parser.get_username", return_value="a@icloud.com"),
+        ):
+            sync.sync()
+        self.assertEqual(handler.call_count, 2)

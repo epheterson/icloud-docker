@@ -823,6 +823,36 @@ def _handle_auth_transport_error(config, username: str, sync_state: SyncState, e
     return True
 
 
+def _handle_sync_error(config, error, drive_sync_interval, photos_sync_interval):
+    """Back off after a failure that happened *after* a successful sign-in.
+
+    Anything raised once ``api`` exists is a service problem, not an auth
+    problem: a zone that is unavailable, a 5xx on a download, a connection
+    dropped mid-transfer. Reporting those as sign-in failures sends the user
+    to re-authenticate for no reason.
+
+    The interval matters as much as the wording. Every handler here ends in
+    ``continue``, which skips ``_calculate_next_sync_schedule`` -- so the
+    countdown timers never advance and both services stay enabled. Retrying
+    on the short login interval therefore re-enumerates the whole library
+    every few minutes. Wait at least as long as the shortest configured sync
+    interval instead: never poll a broken service faster than a working one.
+
+    Returns True to keep looping, False to exit.
+    """
+    LOGGER.error(f"Sync failed and will be retried: {error!s}")
+    sleep_for = config_parser.get_retry_login_interval(config=config)
+    if sleep_for < 0:
+        LOGGER.info("retry_login_interval is < 0, exiting ...")
+        return False
+    configured = [i for i in (drive_sync_interval, photos_sync_interval) if i > 0]
+    if configured:
+        sleep_for = max(sleep_for, min(configured))
+    _log_retry_time(sleep_for)
+    sleep(sleep_for)
+    return True
+
+
 def _handle_password_error(config, username: str, sync_state: SyncState):
     """
     Handle password not available error.
@@ -1030,8 +1060,10 @@ def sync(dry_run: bool = False, check_files: int | None = None):
             pass
 
         if username:
+            authenticated = False
             try:
                 api = _authenticate_and_get_api(config, username)
+                authenticated = True
 
                 # Dry-run path: authenticate, enumerate, log, exit.
                 # Skips the entire sync + notification + retry pipeline.
@@ -1153,19 +1185,33 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                 continue
             except exceptions.ICloudPyServiceNotActivatedException as e:
                 # A zone or service being unavailable says nothing about the
-                # sign-in, so it must not earn the rate-limit backoff meant
-                # for "you are trying too often". Wait the ordinary interval.
-                LOGGER.error(f"Service unavailable, will retry: {e!s}")
-                sleep_for = config_parser.get_retry_login_interval(config=config)
-                if sleep_for < 0:
+                # sign-in whenever it surfaces, so it never earns the
+                # rate-limit backoff. Listed ahead of the broader catch
+                # below because it subclasses it.
+                if not _handle_sync_error(
+                    config,
+                    e,
+                    drive_sync_interval,
+                    photos_sync_interval,
+                ):
                     break
-                _log_retry_time(sleep_for)
-                sleep(sleep_for)
                 continue
             except (
                 exceptions.ICloudPyAPIResponseException,
                 requests.exceptions.RequestException,
             ) as e:
+                # Any other failure raised after the sign-in succeeded is a
+                # service problem, not an auth problem -- and must not earn
+                # the backoff meant for "you are trying too often" either.
+                if authenticated:
+                    if not _handle_sync_error(
+                        config,
+                        e,
+                        drive_sync_interval,
+                        photos_sync_interval,
+                    ):
+                        break
+                    continue
                 # Apple refuses sign-in for reasons other than "2FA needed":
                 # 409 when it is throttling the account, 5xx when it is
                 # having a bad day, plus ordinary network faults. None of
