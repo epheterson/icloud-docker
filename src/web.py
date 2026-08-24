@@ -714,7 +714,7 @@ def create_app(testing: bool = False) -> Flask:
         if pending_challenge:
             LOGGER.info("Web UI security-key: re-rendering the pending challenge.")
             return _render_auth(security_key_blob=_pack_challenge(pending_challenge))
-        return _render_auth(security_key_start=True)
+        return redirect(url_for("auth_form"))
 
     @app.route("/auth/security-key/start", methods=["POST"])
     def auth_security_key_start():
@@ -789,7 +789,6 @@ def create_app(testing: bool = False) -> Flask:
                             "again, as each attempt extends the limit."
                         ),
                         message_kind="warn",
-                        security_key_start=True,
                     ),
                     429,
                 )
@@ -797,7 +796,6 @@ def create_app(testing: bool = False) -> Flask:
                 _render_auth(
                     message=f"Sign-in failed: {e!s}",
                     message_kind="err",
-                    security_key_start=True,
                 ),
                 400,
             )
@@ -971,9 +969,9 @@ def create_app(testing: bool = False) -> Flask:
                     400,
                 )
             LOGGER.info("Web UI: security-key re-auth succeeded; session trusted.")
-            # ``signed_in`` tells the dashboard to wipe the assertion off the
-            # operator's clipboard now that Apple has accepted it.
-            return redirect(url_for("dashboard", signed_in="1"))
+            # The signer clears the clipboard itself once the signature is
+            # read, so there is nothing left for the dashboard to do here.
+            return redirect(url_for("dashboard"))
         except Exception as e:
             LOGGER.exception("Web UI security-key: assertion submit raised")
             return (
@@ -1347,7 +1345,6 @@ def _render_auth(
     message: str | None = None,
     message_kind: str | None = None,
     security_key_blob: str | None = None,
-    security_key_start: bool = False,
 ):
     """Render auth.html with the current pending state and an optional
     error/info pill. Factored out so the POST endpoints can reuse it.
@@ -1371,7 +1368,6 @@ def _render_auth(
         version=os.environ.get("APP_VERSION", ""),
         csrf_token=_get_csrf_token(),
         security_key_blob=security_key_blob,
-        security_key_start=security_key_start,
         signer_command=_build_signer_command(security_key_blob) if security_key_blob else None,
         auth_method=_lookup_auth_method(status_payload),
     )

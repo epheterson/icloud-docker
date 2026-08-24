@@ -27,27 +27,7 @@
 {% endif %}
 
 <div class="card" style="max-width: 640px;">
-  {% if security_key_start %}
-    <div class="status-row" style="margin: 0 0 16px;">
-      <div class="status-dot warn"></div>
-      <div class="status-text">
-        <strong>Unvalidated.</strong> No assertion produced here has yet been accepted by Apple, so this flow is not known to work. The trust-token option below is the validated path.
-      </div>
-    </div>
-    <p style="margin: 0 0 16px; font-size: 14px; color: var(--text-secondary);">
-      Asking Apple for a challenge signs in, and Apple rate-limits that. Loading this page costs nothing; only the button below does.
-    </p>
-    <form method="post" action="/auth/security-key/start">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="status-cta" style="display: block; width: 100%; padding: 11px 14px; font-size: 14px; border: none; cursor: pointer; margin-left: 0;">
-        Get a challenge
-      </button>
-    </form>
-
-    <p style="margin: 10px 0 0; font-size: 12px; color: var(--text-tertiary);">
-      Have your key to hand first — the challenge lasts ten minutes, and reloading reuses it rather than spending another sign-in.
-    </p>
-  {% elif security_key_blob %}
+  {% if security_key_blob %}
     <p style="margin: 0 0 14px; font-size: 14px; color: var(--text-secondary);">
       Apple is asking for your <strong>security key</strong>, not a 6-digit code. Your browser cannot sign this (WebAuthn ties the challenge to <span class="mono">apple.com</span>), so run the signer on the machine holding your key.
     </p>
@@ -85,9 +65,12 @@
     <p style="margin: 0 0 16px; font-size: 14px; color: var(--text-secondary);">
       Apple answers every code request for this account with a security-key challenge, so there is no code to enter and no password to retype.
     </p>
-    <a href="/auth/security-key" class="status-cta" style="display: block; width: 100%; box-sizing: border-box; padding: 11px 14px; font-size: 14px; text-align: center; text-decoration: none; margin-left: 0;">
-      Sign in with your security key
-    </a>
+    <form method="post" action="/auth/security-key/start">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="status-cta" style="display: block; width: 100%; padding: 11px 14px; font-size: 14px; border: none; cursor: pointer; margin-left: 0;">
+        Sign in with your security key
+      </button>
+    </form>
   {% elif not pending and auth == 'ready' %}
     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 18px;">
       <div class="status-dot"></div>
@@ -170,7 +153,7 @@
 {% if status.username and not security_key_blob and auth_method != 'security_key' %}
 <p style="margin-top: 16px; font-size: 13px; color: var(--text-secondary);">
   Using a hardware security key or passkey on your Apple ID? Apple will not send a 6-digit code —
-  <a href="/auth/security-key" style="color: var(--accent);">re-authenticate with your security key</a> instead.
+  use the security key button above instead.
 </p>
 {% endif %}
 

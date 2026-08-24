@@ -167,12 +167,11 @@ class TestSecurityKeyGet(unittest.TestCase):
 
     def test_plain_load_never_contacts_apple(self):
         """A reload or a browser prefetch must not spend a sign-in against
-        Apple's rate limit."""
+        Apple's rate limit, so the GET signs in for nobody."""
         with patch("icloudpy.ICloudPyService") as service:
             response = self._client().get("/auth/security-key")
         service.assert_not_called()
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Get a challenge", response.data)
+        self.assertEqual(response.status_code, 302)
 
     def test_400_without_username(self):
         with patch.object(web, "_load_current_config", return_value={"app": {}}):
@@ -702,7 +701,6 @@ class TestSigninThrottleHandling(unittest.TestCase):
             response = _csrf_post(self._client(), "/auth/security-key/start")
         self.assertEqual(response.status_code, 429)
         self.assertIn(b"rate-limiting", response.data)
-        self.assertIn(b"Get a challenge", response.data)
 
     def test_start_requires_csrf(self):
         """The only path that spends a sign-in must not be triggerable by a
