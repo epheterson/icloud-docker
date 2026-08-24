@@ -10,6 +10,7 @@ from icloudpy import ICloudPyService, exceptions, utils
 
 from src import (
     DEFAULT_CONFIG_FILE_PATH,
+    DEFAULT_RETRY_LOGIN_INTERVAL_SEC,
     ENV_CONFIG_FILE_PATH_KEY,
     ENV_ICLOUD_PASSWORD_KEY,
     config_parser,
@@ -1027,7 +1028,23 @@ def sync(dry_run: bool = False, check_files: int | None = None):
     startup_logged = False
 
     while True:
-        config = _load_configuration()
+        # A config that cannot be read must not kill the daemon. On a NAS the
+        # volume holding config.yaml can lag behind container start or go away
+        # mid-run, and a half-written file (the user editing it live) raises
+        # out of the YAML parser. Either way the traceback escapes the loop,
+        # and `restart: unless-stopped` turns that into a restart loop.
+        try:
+            config = _load_configuration()
+        except Exception as e:  # noqa: BLE001 -- any parse fault must not be fatal
+            LOGGER.error(f"Config file could not be read, retrying: {e!s}")
+            config = None
+        if config is None:
+            if dry_run:
+                # A dry run is a one-shot check with nothing to wait for.
+                LOGGER.error("DRY RUN: no readable config, nothing to check.")
+                return
+            sleep(DEFAULT_RETRY_LOGIN_INTERVAL_SEC)
+            continue
 
         # Log sync intervals once at startup
         if not startup_logged:

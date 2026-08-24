@@ -1522,3 +1522,61 @@ class TestPostAuthFailuresAreNotSigninFailures(unittest.TestCase):
         ):
             sync.sync()
         self.assertEqual(handler.call_count, 2)
+
+
+class TestUnreadableConfigDoesNotKillTheDaemon(unittest.TestCase):
+    """A missing or half-written config.yaml must not become a restart loop.
+
+    On a NAS the volume holding the config can lag behind container start or
+    vanish mid-run. ``read_config`` returns None for a missing file, and the
+    downstream ``"drive" not in config`` raised TypeError straight out of the
+    loop -- which ``restart: unless-stopped`` turns into a crash loop."""
+
+    def test_missing_config_waits_instead_of_raising(self):
+        from unittest.mock import patch
+
+        from src import sync
+
+        # Second pass returns a config whose intervals are negative so the
+        # loop exits; the first pass is the one under test.
+        configs = [None, {"app": {"credentials": {"username": None}}}]
+        with (
+            patch.object(sync, "_load_configuration", side_effect=configs),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(sync, "sleep") as slept,
+            patch.object(sync, "_interruptible_sleep"),
+            patch("src.config_parser.get_username", return_value=None),
+        ):
+            sync.sync()
+        slept.assert_called_once_with(600)
+
+    def test_unparseable_config_waits_instead_of_raising(self):
+        from unittest.mock import patch
+
+        from src import sync
+
+        side_effects = [
+            ValueError("could not parse yaml"),
+            {"app": {"credentials": {"username": None}}},
+        ]
+        with (
+            patch.object(sync, "_load_configuration", side_effect=side_effects),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(sync, "sleep") as slept,
+            patch.object(sync, "_interruptible_sleep"),
+            patch("src.config_parser.get_username", return_value=None),
+        ):
+            sync.sync()
+        slept.assert_called_once_with(600)
+
+    def test_dry_run_returns_instead_of_waiting(self):
+        from unittest.mock import patch
+
+        from src import sync
+
+        with (
+            patch.object(sync, "_load_configuration", return_value=None),
+            patch.object(sync, "sleep") as slept,
+        ):
+            sync.sync(dry_run=True)
+        slept.assert_not_called()
