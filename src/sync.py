@@ -1151,6 +1151,17 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                 if not _handle_password_error(config, username, sync_state):
                     break
                 continue
+            except exceptions.ICloudPyServiceNotActivatedException as e:
+                # A zone or service being unavailable says nothing about the
+                # sign-in, so it must not earn the rate-limit backoff meant
+                # for "you are trying too often". Wait the ordinary interval.
+                LOGGER.error(f"Service unavailable, will retry: {e!s}")
+                sleep_for = config_parser.get_retry_login_interval(config=config)
+                if sleep_for < 0:
+                    break
+                _log_retry_time(sleep_for)
+                sleep(sleep_for)
+                continue
             except (
                 exceptions.ICloudPyAPIResponseException,
                 requests.exceptions.RequestException,

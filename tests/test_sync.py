@@ -1334,3 +1334,71 @@ class TestSigninTransportFailures(unittest.TestCase):
             patch("src.config_parser.get_username", return_value="a@icloud.com"),
         ):
             sync.sync()  # must return, not raise
+
+
+class TestServiceUnavailableIsNotASigninFailure(unittest.TestCase):
+    """A zone or service being unavailable says nothing about the sign-in.
+
+    ICloudPyServiceNotActivatedException subclasses
+    ICloudPyAPIResponseException, so catching the parent to absorb sign-in
+    faults also swallows "Zone does not exist" -- which then earns the
+    rate-limit backoff for an account that is signed in perfectly well."""
+
+    def test_it_is_a_subclass_of_the_broader_exception(self):
+        """The reason the broad catch swallows it."""
+        from icloudpy import exceptions
+
+        self.assertTrue(
+            issubclass(
+                exceptions.ICloudPyServiceNotActivatedException,
+                exceptions.ICloudPyAPIResponseException,
+            ),
+        )
+
+    def test_zone_errors_use_the_ordinary_interval(self):
+        from unittest.mock import patch
+
+        from icloudpy import exceptions
+
+        from src import sync
+
+        config = {
+            "app": {"credentials": {"username": "a@icloud.com", "retry_login_interval": -1}},
+            "drive": {"destination": "drive"},
+        }
+        error = exceptions.ICloudPyServiceNotActivatedException("Zone does not exist")
+        with (
+            patch.object(sync, "_load_configuration", return_value=config),
+            patch.object(sync, "alive"),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(sync, "_authenticate_and_get_api", side_effect=error),
+            patch.object(sync, "_handle_auth_transport_error") as auth_handler,
+            patch("src.config_parser.get_username", return_value="a@icloud.com"),
+        ):
+            sync.sync()
+        auth_handler.assert_not_called()
+
+    def test_zone_errors_wait_and_retry(self):
+        """Not fatal: the account is fine, the service is not."""
+        from unittest.mock import patch
+
+        from icloudpy import exceptions
+
+        from src import sync
+
+        config = {
+            "app": {"credentials": {"username": "a@icloud.com"}},
+            "drive": {"destination": "drive"},
+        }
+        error = exceptions.ICloudPyServiceNotActivatedException("Zone does not exist")
+        with (
+            patch.object(sync, "_load_configuration", return_value=config),
+            patch.object(sync, "alive"),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(sync, "_authenticate_and_get_api", side_effect=error),
+            patch.object(sync, "sleep", side_effect=[None, SystemExit]) as slept,
+            patch("src.config_parser.get_username", return_value="a@icloud.com"),
+        ):
+            with self.assertRaises(SystemExit):
+                sync.sync()
+        self.assertGreaterEqual(slept.call_count, 1)
