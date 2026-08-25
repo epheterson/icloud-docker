@@ -2518,3 +2518,52 @@ class TestCollisionDoesNotOrphanTheFileItPreserves(unittest.TestCase):
                     self._photo(), "original", base, files, None, None,
                 )
             self.assertEqual(len(files), 2)
+
+
+class TestWrongContentAtThePlainPathDoesNotChurn(unittest.TestCase):
+    """The real-world shape of the incident: a file sits at the expected path
+    whose bytes belong to a different variant (a HEIC still saved under a
+    .MOV name by an older release). Its size never matches, so the collision
+    fires on every single pass, forever -- no number of syncs repairs a wrong
+    extension. Before the fix that meant: exile the photo to a suffix, leave
+    the plain path untracked, let cleanup delete it, re-download it next pass,
+    repeat. 185,207 files in one pass on a real library."""
+
+    def test_the_mismatched_file_survives_repeated_passes(self):
+        from unittest.mock import MagicMock, patch
+
+        from src import photo_download_manager as m
+        from src.photo_cleanup_utils import remove_obsolete_files
+
+        with tempfile.TemporaryDirectory() as base:
+            plain = os.path.join(base, "IMG_5921.MOV")
+            Path(plain).write_text("HEIC bytes under a .MOV name")
+            suffix = os.path.join(base, "IMG_5921__live_video_original__X.MOV")
+
+            photo = MagicMock()
+            photo.filename = "IMG_5921.MOV"
+            photo.id = "ID1"
+            photo.versions = {"live_video_original": {"size": 3954138}}
+
+            for _pass in range(3):
+                files: set[str] = set()
+                with (
+                    patch.object(m, "generate_photo_path", return_value=plain),
+                    patch.object(m, "get_default_filename_format", return_value="simple"),
+                    patch.object(m, "get_file_format", return_value=None),
+                    patch.object(m, "create_folder_path_if_needed", return_value=base),
+                    patch.object(
+                        m, "generate_photo_filename_with_metadata",
+                        return_value=os.path.basename(suffix),
+                    ),
+                    patch("src.photo_file_utils.check_photo_exists", return_value=False),
+                ):
+                    m.collect_download_task(
+                        photo, "live_video_original", base, files, None, None,
+                    )
+                Path(suffix).write_text("the real video")
+                removed = remove_obsolete_files(base, files)
+                self.assertEqual(
+                    removed, set(), f"pass {_pass}: cleanup deleted a preserved file",
+                )
+                self.assertTrue(Path(plain).is_file(), f"pass {_pass}: plain path lost")
