@@ -202,6 +202,18 @@ def collect_download_task(
         with files_lock:
             in_flight_collision = photo_path in files
     if is_non_unique and (os.path.isfile(photo_path) or in_flight_collision):
+        # Protect the file we are stepping around. This branch exists to
+        # "preserve both photos", but obsolete-file cleanup deletes anything
+        # absent from ``files`` -- so without this the run writes the suffix
+        # copy and then deletes the very file it just refused to overwrite.
+        # On a library with many repeated filenames that is not a rare edge
+        # case: it deletes a large share of the library every sync, and the
+        # next sync re-downloads it, because freeing the plain path changes
+        # the collision outcome. Only an on-disk collision needs this; an
+        # in-flight one means this run already claimed the path.
+        if files is not None and os.path.isfile(photo_path):
+            with files_lock:
+                files.add(photo_path)
         suffix_folder = create_folder_path_if_needed(
             destination_path, folder_format, photo,
         )

@@ -5,6 +5,7 @@ __author__ = "Mandar Patil (mandarons@pm.me)"
 import glob
 import os
 import shutil
+import tempfile
 import unittest
 from datetime import timezone
 from io import StringIO
@@ -2450,3 +2451,70 @@ class TestSyncPhotos(unittest.TestCase):
             )
         # Should return (0, 0) when sync_album_photos returns None
         self.assertEqual(result, (0, 0))
+
+
+class TestCollisionDoesNotOrphanTheFileItPreserves(unittest.TestCase):
+    """The collision branch exists to "preserve both photos". Obsolete-file
+    cleanup deletes anything absent from the tracked-file set, so unless the
+    collided-with file is tracked, the same run writes the suffix copy and
+    then deletes the file it just refused to overwrite.
+
+    On a library with many repeated filenames this is not an edge case: it
+    removed 185,207 files in a single pass on a real 400k-file library, and
+    the next pass re-downloaded them, because freeing the plain path flips
+    the collision outcome back."""
+
+    def _photo(self, name="IMG_0001.HEIC", size=100):
+        from unittest.mock import MagicMock
+
+        photo = MagicMock()
+        photo.filename = name
+        photo.id = "ABC123"
+        photo.versions = {"original": {"size": size}}
+        return photo
+
+    def test_the_collided_with_file_stays_tracked(self):
+        from unittest.mock import patch
+
+        from src import photo_download_manager as m
+
+        with tempfile.TemporaryDirectory() as base:
+            plain = os.path.join(base, "IMG_0001.HEIC")
+            Path(plain).write_text("someone else's photo")
+            files = set()
+            with (
+                patch.object(m, "generate_photo_path", return_value=plain),
+                patch.object(m, "get_default_filename_format", return_value="simple"),
+                patch.object(m, "get_file_format", return_value=None),
+                patch.object(m, "create_folder_path_if_needed", return_value=base),
+                patch.object(m, "generate_photo_filename_with_metadata", return_value="IMG_0001__original__X.HEIC"),
+                patch("src.photo_file_utils.check_photo_exists", return_value=False),
+            ):
+                m.collect_download_task(
+                    self._photo(), "original", base, files, None, None,
+                )
+            self.assertIn(plain, files, "the preserved file must not be left untracked")
+            self.assertIn(os.path.join(base, "IMG_0001__original__X.HEIC"), files)
+
+    def test_an_in_flight_collision_does_not_re_add_the_path(self):
+        """This run already claimed the plain path, so it is already tracked;
+        nothing on disk is being stepped around."""
+        from unittest.mock import patch
+
+        from src import photo_download_manager as m
+
+        with tempfile.TemporaryDirectory() as base:
+            plain = os.path.join(base, "IMG_0001.HEIC")  # deliberately absent
+            files = {plain}
+            with (
+                patch.object(m, "generate_photo_path", return_value=plain),
+                patch.object(m, "get_default_filename_format", return_value="simple"),
+                patch.object(m, "get_file_format", return_value=None),
+                patch.object(m, "create_folder_path_if_needed", return_value=base),
+                patch.object(m, "generate_photo_filename_with_metadata", return_value="IMG_0001__original__X.HEIC"),
+                patch("src.photo_file_utils.check_photo_exists", return_value=False),
+            ):
+                m.collect_download_task(
+                    self._photo(), "original", base, files, None, None,
+                )
+            self.assertEqual(len(files), 2)
