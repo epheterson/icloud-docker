@@ -1219,3 +1219,29 @@ class TestInterruptibleSleep(unittest.TestCase):
         # Exited after the second chunk -> 2 sleeps + 2 polls.
         self.assertEqual(mock_sleep.call_count, 2)
         self.assertEqual(mock_pending.call_count, 2)
+
+
+class TestStaleLibraryStateCleanupIsBestEffort(unittest.TestCase):
+    """Clearing dashboard state is never worth blocking startup over."""
+
+    def test_a_failure_clearing_state_does_not_stop_the_loop(self):
+        from unittest.mock import patch
+
+        from src import sync, web_signals
+
+        config = {
+            "app": {"credentials": {"username": None, "retry_login_interval": -1}},
+        }
+        with (
+            patch.object(sync, "_load_configuration", return_value=config),
+            patch.object(sync, "alive"),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(
+                web_signals,
+                "clear_stale_library_states",
+                side_effect=OSError("read-only fs"),
+            ),
+            patch.object(sync, "_interruptible_sleep"),
+            patch("src.config_parser.get_username", return_value=None),
+        ):
+            sync.sync()
