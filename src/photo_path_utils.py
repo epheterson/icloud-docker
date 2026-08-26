@@ -263,14 +263,25 @@ def normalize_file_path(file_path: str) -> str:
 def rename_legacy_file_if_exists(old_path: str, new_path: str) -> None:
     """Rename legacy file format to new format if it exists.
 
+    Reported because this is destructive and was previously silent: a
+    rename is not a deletion, so nothing in the log accounted for a file
+    that moved, and ``os.rename`` replaces an existing target without a
+    word. A file could leave its path, or be overwritten where it stood,
+    with no record either way.
+
     Args:
         old_path: Path to legacy file format
         new_path: Path to new file format
     """
     import os
 
-    if os.path.isfile(old_path):
-        os.rename(old_path, new_path)
+    if not os.path.isfile(old_path):
+        return
+    if os.path.isfile(new_path):
+        LOGGER.warning(f"Renaming {old_path} over existing {new_path}")
+    else:
+        LOGGER.info(f"Renaming {old_path} -> {new_path}")
+    os.rename(old_path, new_path)
 
 
 def _get_video_filetype_mapping() -> dict:
