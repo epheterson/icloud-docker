@@ -106,9 +106,26 @@ def generate_photo_path(photo, file_size: str, destination_path: str, folder_for
     final_file_path = os.path.join(final_destination, filename_with_metadata)
     normalized_path = normalize_file_path(final_file_path)
 
+    # The path the still legitimately occupies under the active naming
+    # scheme. Every legacy rename below moves a file onto *this* variant's
+    # path, and os.rename replaces its target -- so a rename starting from
+    # the still destroys the still and whatever stood at the target. Without
+    # folder_format the destination and the photo's folder are the same
+    # directory, which makes the flat "legacy" paths below identical to the
+    # still's current one.
+    still_path = normalize_file_path(
+        os.path.join(
+            final_destination,
+            generate_photo_filename_with_metadata(photo, "original"),
+        ),
+    )
+    _moves_the_still = file_size in _LIVE_VIDEO_SIZES
+
     # Rename legacy files if they exist
-    rename_legacy_file_if_exists(file_path, normalized_path)
-    rename_legacy_file_if_exists(file_size_path, normalized_path)
+    if not (_moves_the_still and file_path == still_path):
+        rename_legacy_file_if_exists(file_path, normalized_path)
+    if not (_moves_the_still and file_size_path == still_path):
+        rename_legacy_file_if_exists(file_size_path, normalized_path)
 
     # Self-heal the earlier .HEIC mislabeling of Live Photo videos: an older
     # version wrote the paired video with the still's extension. Rename that
@@ -125,12 +142,6 @@ def generate_photo_path(photo, file_size: str, destination_path: str, folder_for
         # because os.rename replaces its target, destroy the video too. The
         # mislabeled file this heals only exists under a scheme that encodes
         # the variant in the name, where the two paths cannot coincide.
-        still_path = normalize_file_path(
-            os.path.join(
-                final_destination,
-                generate_photo_filename_with_metadata(photo, "original"),
-            ),
-        )
         # Confirm the candidate really is the paired video before moving it.
         # os.rename replaces its target, so an unverified rename destroys two
         # files at once and logs nothing. CloudKit already reports how long

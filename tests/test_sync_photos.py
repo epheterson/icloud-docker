@@ -2665,3 +2665,28 @@ class TestSelfHealMustNotEatTheStill(unittest.TestCase):
 
             self.assertTrue(impostor.is_file(), "a wrong-length file was renamed")
             self.assertFalse(Path(out).exists())
+
+    def test_a_flat_layout_without_folder_format_also_survives(self):
+        """With no folder_format the destination and the photo's folder are
+        the same directory, so the "legacy" flat paths are identical to the
+        still's current one -- the earlier renames hit it too."""
+        from unittest.mock import patch
+
+        from src import photo_download_manager as m
+        from src.photo_path_utils import set_default_filename_format
+
+        with tempfile.TemporaryDirectory() as base:
+            still = Path(base, "IMG_5878.HEIC")
+            video = Path(base, "IMG_5878.MOV")
+            still.write_text("the still")
+            video.write_text("the video")
+
+            set_default_filename_format("simple")
+            try:
+                with patch.object(m, "create_folder_path_if_needed", return_value=base):
+                    m.generate_photo_path(self._photo(), "live_video_original", base, None)
+            finally:
+                set_default_filename_format("metadata")
+
+            self.assertTrue(still.is_file(), "the still was renamed away")
+            self.assertEqual(video.read_text(), "the video", "the video was overwritten")
