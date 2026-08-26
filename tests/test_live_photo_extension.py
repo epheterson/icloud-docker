@@ -69,7 +69,17 @@ class TestDownloadSelfHeal:
     def test_generate_photo_path_renames_legacy_heic_video(self, tmp_path):
         # An existing IMG__live_video_original__<id>.HEIC (from an earlier build)
         # must be renamed in place to the corrected .MOV, not left for re-download.
-        photo = _photo("IMG_1.HEIC", {"live_video_original": {"type": "com.apple.quicktime-movie"}})
+        # CloudKit always reports the version's size; the heal only renames a
+        # file that is that length.
+        photo = _photo(
+            "IMG_1.HEIC",
+            {
+                "live_video_original": {
+                    "type": "com.apple.quicktime-movie",
+                    "size": len(_FTYP_QUICKTIME),
+                },
+            },
+        )
         corrected = generate_photo_filename_with_metadata(photo, "live_video_original")
         assert corrected.endswith(".MOV")
         legacy = os.path.join(str(tmp_path), corrected[: -len(".MOV")] + ".HEIC")

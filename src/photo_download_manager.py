@@ -119,7 +119,37 @@ def generate_photo_path(photo, file_size: str, destination_path: str, folder_for
         legacy_mislabeled = normalize_file_path(
             os.path.join(final_destination, f"{root}.{extension}"),
         )
-        if legacy_mislabeled != normalized_path:
+        # Under a naming scheme that keeps the photo's own filename, ``root``
+        # is the still's stem, so the candidate above IS the still's correct
+        # path -- renaming it would move the still onto the video's path and,
+        # because os.rename replaces its target, destroy the video too. The
+        # mislabeled file this heals only exists under a scheme that encodes
+        # the variant in the name, where the two paths cannot coincide.
+        still_path = normalize_file_path(
+            os.path.join(
+                final_destination,
+                generate_photo_filename_with_metadata(photo, "original"),
+            ),
+        )
+        # Confirm the candidate really is the paired video before moving it.
+        # os.rename replaces its target, so an unverified rename destroys two
+        # files at once and logs nothing. CloudKit already reports how long
+        # the video should be, so this costs a stat and no extra I/O: a file
+        # of some other length is not the video, whatever it is named.
+        expected_size = (photo.versions.get(file_size) or {}).get("size")
+        try:
+            candidate_size = (
+                os.path.getsize(legacy_mislabeled)
+                if os.path.isfile(legacy_mislabeled)
+                else None
+            )
+        except OSError:  # pragma: no cover - raced away between the two calls
+            candidate_size = None
+        if (
+            legacy_mislabeled not in (normalized_path, still_path)
+            and expected_size is not None
+            and candidate_size == expected_size
+        ):
             rename_legacy_file_if_exists(legacy_mislabeled, normalized_path)
 
     # Handle existing file with different normalization
