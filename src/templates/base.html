@@ -181,8 +181,14 @@
     .lib-row .arrow { color: var(--text-tertiary); }
     .lib-entry { padding: 6px 0; }
     .lib-entry + .lib-entry { border-top: 1px solid var(--divider); }
-    .lib-row .lib-name { overflow-wrap: anywhere; min-width: 0; flex: 1; }
-    .lib-dest { color: var(--text-tertiary); font-size: 12px; padding-left: 14px; overflow-wrap: anywhere; }
+    .lib-row .lib-name {
+      min-width: 0; flex: 1;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .lib-dest {
+      color: var(--text-tertiary); font-size: 12px; padding-left: 14px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     .lib-row .lib-state { color: var(--text-tertiary); white-space: nowrap; margin-left: auto; }
     .lib-row .lib-state.syncing { color: var(--accent); }
     .lib-row .lib-state.failed { color: var(--warn, #b25000); }
