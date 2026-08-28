@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 from src import config_parser
 from src.photo_path_utils import (
     generate_photo_filename_with_metadata,
+    set_default_filename_format,
     set_preserve_originals_as_bak,
 )
 
@@ -60,9 +61,11 @@ class TestFilenameSuffixApplied(unittest.TestCase):
 
     def setUp(self):
         set_preserve_originals_as_bak(True)
+        set_default_filename_format("metadata")
 
     def tearDown(self):
         set_preserve_originals_as_bak(False)
+        set_default_filename_format("metadata")
 
     def test_edited_photo_original_gets_bak_suffix(self):
         photo = _photo_with_alt("IMG_1234.HEIC", "abc")
@@ -98,6 +101,7 @@ class TestFilenameSuffixNotAppliedWhenToggleOff(unittest.TestCase):
 
     def setUp(self):
         set_preserve_originals_as_bak(False)
+        set_default_filename_format("metadata")
 
     def test_edited_photo_original_no_bak_when_toggle_off(self):
         photo = _photo_with_alt("IMG_1234.HEIC", "abc")
@@ -111,9 +115,11 @@ class TestPartialCloudkitRecordSafe(unittest.TestCase):
 
     def setUp(self):
         set_preserve_originals_as_bak(True)
+        set_default_filename_format("metadata")
 
     def tearDown(self):
         set_preserve_originals_as_bak(False)
+        set_default_filename_format("metadata")
 
     def test_versions_raises_falls_through_to_normal_name(self):
         """A partial CloudKit record where ``photo.versions`` raises
@@ -151,6 +157,7 @@ class TestSyncGateRequiresOriginalAlt(unittest.TestCase):
 
     def setUp(self):
         set_preserve_originals_as_bak(False)
+        set_default_filename_format("metadata")
 
     def tearDown(self):
         set_preserve_originals_as_bak(False)
