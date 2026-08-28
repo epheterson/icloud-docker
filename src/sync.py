@@ -118,6 +118,51 @@ def _publish_auth_blocked(blocked: bool, reason: str | None = None) -> None:
         LOGGER.warning(f"Could not publish auth state: {e!s}")
 
 
+def _maybe_refresh_trust(config, api) -> None:
+    """Re-trust the session before its token ages out.
+
+    ``trust_session`` asks Apple for a new ``X-Apple-TwoSV-Trust-Token``
+    and icloudpy persists it to ``session_data``. Calling it while the
+    session is still healthy therefore rolls the window forward, so a
+    restart at any later point finds a young token and resumes without
+    prompting for a second factor.
+
+    This matters most for accounts where the second factor is expensive
+    or impossible to satisfy headlessly (hardware security keys, where
+    Apple refuses to send a 6-digit code at all).
+
+    Best-effort: never raises into the sync loop.
+    """
+    try:
+        threshold = config_parser.get_trust_refresh_days(config=config)
+        if threshold <= 0:
+            return
+        expires_at = _read_trust_cookie_expiry(api)
+        if expires_at is None:
+            return
+        days_remaining = (
+            expires_at - datetime.datetime.now(tz=datetime.timezone.utc)
+        ).days
+        if days_remaining > threshold:
+            return
+        LOGGER.info(
+            f"Trust token has {days_remaining}d left (threshold {threshold}d) -- refreshing.",
+        )
+        if api.trust_session():
+            refreshed = _read_trust_cookie_expiry(api)
+            LOGGER.info(
+                "Trust refreshed; now expires "
+                f"{refreshed.isoformat() if refreshed else 'unknown'}.",
+            )
+        else:
+            LOGGER.warning(
+                "Proactive trust refresh was declined by Apple -- a second "
+                "factor will be needed at the next cold start.",
+            )
+    except Exception as e:  # pragma: no cover - never break sync over a refresh
+        LOGGER.warning(f"trust refresh failed: {e!s}")
+
+
 def _maybe_warn_trust_expiring(config, api, username: str) -> None:
     """Fire the trust-expiring notification once when crossing threshold.
 
@@ -1265,6 +1310,7 @@ def sync(dry_run: bool = False, check_files: int | None = None):
                     # Trust-window check: record current cookie expiry and
                     # fire a pre-emptive warning once if it's about to lapse.
                     # Best-effort: any failure is logged + swallowed inside.
+                    _maybe_refresh_trust(config, api)
                     _maybe_warn_trust_expiring(config, api, username)
 
                     # Authenticated: clear the 2FA trigger latch so a future
