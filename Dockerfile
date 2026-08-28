@@ -35,6 +35,7 @@ LABEL maintainer="mandarons"
 
 # Set environment variables
 ENV HOME="/app"
+ENV XDG_DATA_HOME="/config"
 ENV PUID=911
 ENV PGID=911
 
@@ -64,4 +65,7 @@ COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 80
+# Web UI (Flask app — see src/web.py). Opt-in via app.web_ui.enabled
+# in config.yaml; default OFF so vanilla installs see no behaviour change.
+EXPOSE 8080
 CMD ["/usr/local/bin/docker-entrypoint.sh"]

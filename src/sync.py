@@ -29,6 +29,122 @@ configure_icloudpy_logging()
 LOGGER = get_logger()
 
 
+_TRUST_COOKIE_NAME = "X-APPLE-WEBAUTH-HSA-TRUST"
+
+
+def _read_trust_cookie_expiry(api) -> datetime.datetime | None:
+    """Return the expiry datetime of Apple's HSA trust cookie, or None.
+
+    The trust window is carried by ``X-APPLE-WEBAUTH-HSA-TRUST`` in
+    icloudpy's cookie jar (persisted to ``session_data/<username>`` as
+    LWPCookieJar). Reading it directly avoids hardcoding Apple's trust
+    duration -- the cookie's own ``expires`` field is the source of
+    truth, set per-cookie by Apple's server. Returns None if the cookie
+    isn't present (e.g. account never auth'd with 2FA, or trust cookie
+    cleared).
+    """
+    try:
+        cookies = api.session.cookies
+    except AttributeError:
+        return None
+    for cookie in cookies:
+        if cookie.name == _TRUST_COOKIE_NAME and cookie.expires:
+            return datetime.datetime.fromtimestamp(
+                cookie.expires,
+                tz=datetime.timezone.utc,
+            )
+    return None
+
+
+# Set once the missing-public_url guidance has been logged (see
+# ``_resolve_dashboard_url``) so the advice appears once per process,
+# not once per sync-loop iteration.
+_WEB_UI_PUBLIC_URL_WARNED = False
+
+
+def _resolve_dashboard_url(config) -> str | None:
+    """Compute the web UI URL to embed in notifications, or None.
+
+    Returns ``None`` when ``app.web_ui.enabled`` is False -- callers
+    fall back to the legacy docker-exec instruction. Otherwise prefers
+    the explicit ``app.web_ui.public_url`` (e.g. the reverse-proxy
+    URL); falls back to ``http://{host}:{port}`` with a warning logged
+    once at startup if the public URL isn't set.
+    """
+    if not config_parser.get_web_ui_enabled(config=config):
+        return None
+    public_url = config_parser.get_web_ui_public_url(config=config)
+    if public_url:
+        return public_url
+    host = config_parser.get_web_ui_host(config=config)
+    port = config_parser.get_web_ui_port(config=config)
+    # Latch: this resolves on every sync-loop iteration, and while the
+    # container sits 2FA-pending (default 600s retry) that is ~144x/day
+    # of identical guidance in the exact scenario the user is watching
+    # the logs. The advice only needs saying once per process.
+    global _WEB_UI_PUBLIC_URL_WARNED
+    if not _WEB_UI_PUBLIC_URL_WARNED:
+        LOGGER.warning(
+            "app.web_ui.public_url not set -- notification URLs will use "
+            "http://%s:%s/, which won't work from outside the container. "
+            "Set app.web_ui.public_url to your reverse-proxy URL.",
+            host,
+            port,
+        )
+        _WEB_UI_PUBLIC_URL_WARNED = True
+    return f"http://{host}:{port}"
+
+
+def _maybe_warn_trust_expiring(config, api, username: str) -> None:
+    """Fire the trust-expiring notification once when crossing threshold.
+
+    Reads the live trust cookie expiry, compares against
+    ``app.trust_expiry_warn_days``, and -- if days_remaining is below
+    the threshold AND we haven't already warned for THIS cookie value --
+    fans the warning out through ``notify.send_trust_expiring``.
+
+    Debounce key is the cookie expiry ISO string itself. When Apple
+    refreshes the trust cookie (new expires_at), the stored
+    ``warned_for_expires_at`` no longer matches and warning eligibility
+    rearms automatically -- no manual reset needed.
+
+    Best-effort: any exception is logged and swallowed so a notification
+    bug never breaks the sync loop.
+    """
+    try:
+        from src import notify, web_signals
+
+        expires_at = _read_trust_cookie_expiry(api)
+        expires_at_iso = expires_at.isoformat() if expires_at else None
+        prior = web_signals.get_trust_state()
+        web_signals.record_trust_state(
+            expires_at_iso=expires_at_iso,
+            warned_for_expires_at=prior.get("warned_for_expires_at"),
+        )
+        if expires_at is None:
+            return
+        days_remaining = (
+            expires_at - datetime.datetime.now(tz=datetime.timezone.utc)
+        ).days
+        threshold = config_parser.get_trust_expiry_warn_days(config=config)
+        if days_remaining >= threshold:
+            return
+        if prior.get("warned_for_expires_at") == expires_at_iso:
+            return  # already warned for this cookie value
+        notify.send_trust_expiring(
+            config=config,
+            username=username,
+            days_remaining=days_remaining,
+            dashboard_url=_resolve_dashboard_url(config),
+        )
+        web_signals.record_trust_state(
+            expires_at_iso=expires_at_iso,
+            warned_for_expires_at=expires_at_iso,
+        )
+    except Exception as e:  # pragma: no cover - guarded so notify bugs don't break sync
+        LOGGER.warning(f"trust-expiring check failed: {e!s}")
+
+
 def get_api_instance(
     username: str,
     password: str,
@@ -125,9 +241,15 @@ def _extract_sync_intervals(config, log_messages: bool = False):
     photos_sync_interval = 0
 
     if config and "drive" in config:
-        drive_sync_interval = config_parser.get_drive_sync_interval(config=config, log_messages=log_messages)
+        drive_sync_interval = config_parser.get_drive_sync_interval(
+            config=config,
+            log_messages=log_messages,
+        )
     if config and "photos" in config:
-        photos_sync_interval = config_parser.get_photos_sync_interval(config=config, log_messages=log_messages)
+        photos_sync_interval = config_parser.get_photos_sync_interval(
+            config=config,
+            log_messages=log_messages,
+        )
 
     return drive_sync_interval, photos_sync_interval
 
@@ -169,7 +291,66 @@ def _authenticate_and_get_api(config, username: str):
     """
     server_region = config_parser.get_region(config=config)
     password = _retrieve_password(username)
-    return get_api_instance(username=username, password=password, server_region=server_region)
+    return get_api_instance(
+        username=username,
+        password=password,
+        server_region=server_region,
+    )
+
+
+def _check_mount_marker(
+    destinations: list[str],
+    marker_filename: str,
+    required: bool,
+    service_name: str,
+) -> bool:
+    """Verify the failsafe marker file is present in every write destination.
+
+    Mirrors boredazfcuk/docker-icloudpd's ``.mounted`` pattern: protects
+    against silent bind-mount failures (typo in the host path, missing
+    share, wrong permissions) that would otherwise dump iCloud data into
+    an empty container-internal directory.
+
+    Takes a list of destinations because a single sync may write to more
+    than one bind-mounted directory; the marker is required in EACH write
+    destination because any one of them could be the failed mount.
+
+    Returns True when it is safe to proceed (marker not required, or
+    marker required and present in every destination). Returns False when
+    the marker is required and is missing from at least one destination —
+    in which case the caller should skip this sync cycle without
+    advancing the countdown so the next interval re-checks. Every
+    missing-marker failure is logged so the user can fix all of them in
+    one pass rather than discovering them one cycle at a time.
+
+    Args:
+        destinations: List of sync destination directories to check. Each
+            directory is checked independently. An empty list returns
+            True (nothing to check).
+        marker_filename: Filename to look for inside each destination
+            (e.g. ``.mounted``).
+        required: Whether the marker is required at all. When False this
+            is a no-op that always returns True.
+        service_name: Human-readable label used in the error log
+            (``Drive`` / ``Photos``).
+
+    Returns:
+        True if it is safe to proceed; False to skip this sync cycle.
+    """
+    if not required:
+        return True
+    all_present = True
+    for destination_path in destinations:
+        marker_path = os.path.join(destination_path, marker_filename)
+        if not os.path.isfile(marker_path):
+            LOGGER.error(
+                f"{service_name} mount marker missing: {marker_path} not found — "
+                f"refusing to sync. Create the marker file (`touch {marker_path}`) "
+                f"after confirming the destination is correctly mounted, then the "
+                f"next sync cycle will proceed.",
+            )
+            all_present = False
+    return all_present
 
 
 def _perform_drive_sync(config, api, sync_state: SyncState, drive_sync_interval: int):
@@ -194,6 +375,22 @@ def _perform_drive_sync(config, api, sync_state: SyncState, drive_sync_interval:
         stats = DriveStats()
 
         destination_path = config_parser.prepare_drive_destination(config=config)
+
+        # Mount-marker failsafe (see _check_mount_marker). Skip this
+        # cycle when the marker isn't present. Reset the countdown to
+        # the full interval so ``_calculate_next_sync_schedule`` waits
+        # before re-checking -- without the reset, on startup
+        # ``drive_time_remaining`` is 0 and the next iteration spins
+        # at zero sleep into a tight busy loop that floods logs and
+        # burns CPU until the user touches the marker.
+        if not _check_mount_marker(
+            destinations=[destination_path],
+            marker_filename=config_parser.get_mount_marker_filename(config=config),
+            required=config_parser.get_drive_require_mount_marker(config=config),
+            service_name="Drive",
+        ):
+            sync_state.drive_time_remaining = drive_sync_interval
+            return None
 
         # Count files before sync
         files_before = set()
@@ -262,6 +459,21 @@ def _perform_photos_sync(config, api, sync_state: SyncState, photos_sync_interva
 
         destination_path = config_parser.prepare_photos_destination(config=config)
 
+        # Mount-marker failsafe (see _check_mount_marker). Skip this cycle
+        # without advancing the countdown so the next interval re-checks
+        # once the user fixes the mount + touches the marker file.
+        if not _check_mount_marker(
+            destinations=[destination_path],
+            marker_filename=config_parser.get_mount_marker_filename(config=config),
+            required=config_parser.get_photos_require_mount_marker(config=config),
+            service_name="Photos",
+        ):
+            # Same busy-loop guard as the Drive branch above: reset the
+            # countdown so the next cycle waits the configured interval
+            # before re-checking the marker.
+            sync_state.photos_time_remaining = photos_sync_interval
+            return None
+
         # Count files before sync
         files_before = set()
         if os.path.exists(destination_path):
@@ -294,9 +506,15 @@ def _perform_photos_sync(config, api, sync_state: SyncState, photos_sync_interva
         stats.photos_downloaded = len(new_files)
 
         # Estimate hardlinked photos (approximate)
-        use_hardlinks = config_parser.get_photos_use_hardlinks(config=config, log_messages=False)
+        use_hardlinks = config_parser.get_photos_use_hardlinks(
+            config=config,
+            log_messages=False,
+        )
         if use_hardlinks:
-            stats.photos_hardlinked = max(0, len(files_after) - len(files_before) - stats.photos_downloaded)
+            stats.photos_hardlinked = max(
+                0,
+                len(files_after) - len(files_before) - stats.photos_downloaded,
+            )
 
         # Count skipped photos
         stats.photos_skipped = len(files_before & files_after)
@@ -336,6 +554,161 @@ def _perform_photos_sync(config, api, sync_state: SyncState, photos_sync_interva
     return None
 
 
+def _perform_dry_run(config, api, check_files: int | None = None) -> None:
+    """Authenticate-and-enumerate path used when ``--dry-run`` is passed.
+
+    Verifies that the configured credentials, mount paths, and iCloud-side
+    state are all in working order WITHOUT writing or downloading any
+    files. Designed as the safety check users run before letting the real
+    sync loop loose on a new install.
+
+    Logs (at INFO level):
+      - Drive destination path + root-level item count (when Drive is configured)
+      - Photos destination path + library names (when Photos is configured)
+      - When ``check_files`` is not None: per-library would-skip /
+        size-mismatch / not-found counts (see ``migration_check``).
+
+    Args:
+        config: Configuration dictionary
+        api: Authenticated iCloud API instance
+        check_files: When set (``--check-files=N``), additionally walks
+            up to N photos per library and reports what a real sync
+            would do per file. ``0`` walks every photo. ``None`` skips
+            this check (cheap default for ``--dry-run`` alone).
+
+    Notifications, usage statistics, file writes, file deletions, and the
+    sync loop itself are all skipped.
+    """
+    LOGGER.info("DRY RUN: authentication succeeded — verifying configured services.")
+
+    if config and "drive" in config:
+        try:
+            # Resolved absolute path (root + destination), computed without
+            # creating anything, so users can verify the mount point. Mirrors
+            # how migration_check builds its base path.
+            drive_destination = os.path.join(
+                config_parser.get_root_destination_path(config=config),
+                config_parser.get_drive_destination_path(config=config),
+            )
+            LOGGER.info(f"DRY RUN: Drive destination: {drive_destination}")
+            root_items = list(api.drive.dir())
+            LOGGER.info(
+                f"DRY RUN: Drive root contains {len(root_items)} item(s) — "
+                "real sync would walk this tree per `drive.filters`.",
+            )
+        except Exception as e:
+            LOGGER.warning(f"DRY RUN: Drive enumeration failed: {e!s}")
+    else:
+        LOGGER.info(
+            "DRY RUN: no `drive:` section in config — Drive sync would be skipped.",
+        )
+
+    if config and "photos" in config:
+        try:
+            photos_destination = os.path.join(
+                config_parser.get_root_destination_path(config=config),
+                config_parser.get_photos_destination_path(config=config),
+            )
+            LOGGER.info(f"DRY RUN: Photos destination: {photos_destination}")
+            libraries = (
+                list(api.photos.libraries.keys())
+                if hasattr(api.photos, "libraries")
+                else []
+            )
+            if libraries:
+                LOGGER.info(
+                    f"DRY RUN: Photos libraries available: {', '.join(libraries)}",
+                )
+            else:
+                LOGGER.info("DRY RUN: Photos libraries: (none reported by iCloud)")
+        except Exception as e:
+            LOGGER.warning(f"DRY RUN: Photos enumeration failed: {e!s}")
+    else:
+        LOGGER.info(
+            "DRY RUN: no `photos:` section in config — Photos sync would be skipped.",
+        )
+
+    if check_files is not None:
+        from src import migration_check
+
+        # Photos walker — per-library counts using mandarons' real path/size
+        # logic so the report mirrors what a real sync would skip vs download.
+        if config and "photos" in config:
+            try:
+                LOGGER.info(
+                    f"DRY RUN: walking photos for file-existence check "
+                    f"(--check-files={'all' if check_files == 0 else check_files} per library) ...",
+                )
+                results = migration_check.check_migration(
+                    api=api,
+                    config=config,
+                    sample=check_files,
+                )
+                for library_name, result in results.items():
+                    stats = result["stats"]
+                    LOGGER.info(
+                        f"DRY RUN: {library_name} (dest {result['library_dest']}): "
+                        f"sampled={result['checked']} "
+                        f"would_skip={stats['would_skip']} "
+                        f"size_mismatch={stats['size_mismatch']} "
+                        f"not_found={stats['not_found']} "
+                        f"errors={stats['error']}",
+                    )
+                    for status, items in result["samples"].items():
+                        for item in items:
+                            if status == "size_mismatch":
+                                path, expected, actual = item
+                                LOGGER.info(
+                                    f"DRY RUN:   sample {status}: {path} (have {actual:,}b, want {expected:,}b)",
+                                )
+                            else:
+                                path, expected = item
+                                LOGGER.info(
+                                    f"DRY RUN:   sample {status}: {path} ({expected:,}b)",
+                                )
+            except Exception as e:
+                LOGGER.warning(f"DRY RUN: photos check-files walk failed: {e!s}")
+
+        # Drive walker — same per-file would_skip/size_mismatch/not_found
+        # report, but walking the Drive tree (no library_destinations,
+        # mirror-tree layout). Catches misconfigured drive.destination.
+        if config and "drive" in config:
+            try:
+                drive_result = migration_check.check_drive_migration(
+                    api=api,
+                    config=config,
+                    sample=check_files,
+                )
+                if drive_result is not None:
+                    stats = drive_result["stats"]
+                    LOGGER.info(
+                        f"DRY RUN: Drive (dest {drive_result['drive_destination']}): "
+                        f"sampled={drive_result['checked']} "
+                        f"would_skip={stats['would_skip']} "
+                        f"size_mismatch={stats['size_mismatch']} "
+                        f"not_found={stats['not_found']} "
+                        f"errors={stats['error']}",
+                    )
+                    for status, items in drive_result["samples"].items():
+                        for item in items:
+                            if status == "size_mismatch":
+                                path, expected, actual = item
+                                LOGGER.info(
+                                    f"DRY RUN:   sample {status}: {path} (have {actual:,}b, want {expected:,}b)",
+                                )
+                            else:
+                                path, expected = item
+                                LOGGER.info(
+                                    f"DRY RUN:   sample {status}: {path} ({expected:,}b)",
+                                )
+            except Exception as e:
+                LOGGER.warning(f"DRY RUN: drive check-files walk failed: {e!s}")
+
+    LOGGER.info(
+        "DRY RUN complete — no files were written. Re-run without --dry-run to sync.",
+    )
+
+
 def _check_services_configured(config):
     """
     Check if any sync services are configured.
@@ -361,12 +734,20 @@ def _send_usage_statistics(config, summary: SyncSummary) -> None:
     # Create anonymized usage data
     usage_data = {
         "sync_duration": (
-            (summary.sync_end_time - summary.sync_start_time).total_seconds() if summary.sync_end_time else 0
+            (summary.sync_end_time - summary.sync_start_time).total_seconds()
+            if summary.sync_end_time
+            else 0
         ),
-        "has_drive_activity": bool(summary.drive_stats and summary.drive_stats.has_activity()),
-        "has_photos_activity": bool(summary.photo_stats and summary.photo_stats.has_activity()),
+        "has_drive_activity": bool(
+            summary.drive_stats and summary.drive_stats.has_activity(),
+        ),
+        "has_photos_activity": bool(
+            summary.photo_stats and summary.photo_stats.has_activity(),
+        ),
         "has_errors": summary.has_errors(),
-        "timestamp": (summary.sync_end_time.isoformat() if summary.sync_end_time else None),
+        "timestamp": (
+            summary.sync_end_time.isoformat() if summary.sync_end_time else None
+        ),
     }
 
     # Add aggregated statistics (no personal data)
@@ -438,6 +819,7 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState, api):
         username=username,
         last_send=sync_state.last_send,
         region=server_region,
+        dashboard_url=_resolve_dashboard_url(config),
     )
     if config_parser.get_telegram_listen_enabled(config=config):
         _wait_for_telegram_code(config=config, api=api, timeout_seconds=sleep_for)
@@ -566,7 +948,9 @@ def _handle_password_error(config, username: str, sync_state: SyncState):
     Returns:
         bool: True if should continue (retry), False if should exit
     """
-    LOGGER.error("Password is not stored in keyring. Please save the password in keyring.")
+    LOGGER.error(
+        "Password is not stored in keyring. Please save the password in keyring.",
+    )
     sleep_for = config_parser.get_retry_login_interval(config=config)
 
     if sleep_for < 0:
@@ -580,6 +964,7 @@ def _handle_password_error(config, username: str, sync_state: SyncState):
         username=username,
         last_send=sync_state.last_send,
         region=server_region,
+        dashboard_url=_resolve_dashboard_url(config),
     )
     sleep(sleep_for)
     return True
@@ -592,7 +977,9 @@ def _log_retry_time(sleep_for: int):
     Args:
         sleep_for: Sleep duration in seconds
     """
-    next_sync = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_for)).strftime("%c")
+    next_sync = (
+        datetime.datetime.now() + datetime.timedelta(seconds=sleep_for)
+    ).strftime("%c")
     LOGGER.info(f"Retrying login at {next_sync} ...")
 
 
@@ -621,15 +1008,24 @@ def _calculate_next_sync_schedule(config, sync_state: SyncState):
         sleep_for = sync_state.drive_time_remaining
         sync_state.enable_sync_drive = True
         sync_state.enable_sync_photos = False
-    elif has_drive and has_photos and sync_state.drive_time_remaining <= sync_state.photos_time_remaining:
+    elif (
+        has_drive
+        and has_photos
+        and sync_state.drive_time_remaining <= sync_state.photos_time_remaining
+    ):
         # Special case: if both timers are equal and large (> 10 seconds), wait for the full interval
         # This fixes the bug where equal large intervals cause immediate re-sync
-        if sync_state.drive_time_remaining == sync_state.photos_time_remaining and sync_state.drive_time_remaining > 10:
+        if (
+            sync_state.drive_time_remaining == sync_state.photos_time_remaining
+            and sync_state.drive_time_remaining > 10
+        ):
             sleep_for = sync_state.drive_time_remaining
             sync_state.enable_sync_drive = True
             sync_state.enable_sync_photos = True
         else:
-            sleep_for = sync_state.photos_time_remaining - sync_state.drive_time_remaining
+            sleep_for = (
+                sync_state.photos_time_remaining - sync_state.drive_time_remaining
+            )
             sync_state.photos_time_remaining -= sync_state.drive_time_remaining
             sync_state.enable_sync_drive = True
             sync_state.enable_sync_photos = False
@@ -649,7 +1045,9 @@ def _log_next_sync_time(sleep_for: int):
     Args:
         sleep_for: Sleep duration in seconds
     """
-    next_sync = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_for)).strftime("%c")
+    next_sync = (
+        datetime.datetime.now() + datetime.timedelta(seconds=sleep_for)
+    ).strftime("%c")
     LOGGER.info(f"Resyncing at {next_sync} ...")
 
 
@@ -689,34 +1087,83 @@ def _should_exit_oneshot_mode(config):
     return should_exit_drive and should_exit_photos
 
 
-def sync():
+def sync(dry_run: bool = False, check_files: int | None = None):
     """
     Main synchronization loop.
 
     Orchestrates the entire sync process by delegating specific responsibilities
     to focused helper functions. This function coordinates the high-level flow
     while each helper handles a single concern.
+
+    Args:
+        dry_run: When True, authenticate and summarise what would be synced,
+            then exit without writing files, sending notifications, or
+            entering the sync loop. Useful for verifying credentials, mount
+            paths, and config before the real loop starts downloading.
+        check_files: Optional sample size for the per-photo file-existence
+            check during dry-run. Only meaningful with ``dry_run=True``.
+            ``None`` skips the check (cheap default). ``0`` walks every
+            photo (slow on large libraries). Positive N walks N
+            stride-sampled photos per library.
     """
     sync_state = SyncState()
     startup_logged = False
 
     while True:
         config = _load_configuration()
-        alive(config=config)
 
         # Log sync intervals once at startup
         if not startup_logged:
             _log_sync_intervals_at_startup(config)
             startup_logged = True
 
-        drive_sync_interval, photos_sync_interval = _extract_sync_intervals(config, log_messages=False)
+        drive_sync_interval, photos_sync_interval = _extract_sync_intervals(
+            config,
+            log_messages=False,
+        )
         username = config_parser.get_username(config=config) if config else None
+
+        # Web UI "Sync now" requests: ``src.web_signals`` writes a
+        # sentinel file when the user taps the button; we delete it and
+        # zero the countdown so the next pass through the sync calls
+        # runs immediately. Best-effort import so vanilla mandarons
+        # builds without the web-UI module still work.
+        try:
+            from src import web_signals as _ws
+
+            if _ws.consume_force_sync("drive"):
+                LOGGER.info("Force-sync requested for Drive — running immediately")
+                sync_state.drive_time_remaining = 0
+            if _ws.consume_force_sync("photos"):
+                LOGGER.info("Force-sync requested for Photos — running immediately")
+                sync_state.photos_time_remaining = 0
+        except (
+            ImportError
+        ):  # pragma: no cover — best-effort fallback for builds without web_signals
+            pass
 
         if username:
             try:
                 api = _authenticate_and_get_api(config, username)
 
+                # Dry-run path: authenticate, enumerate, log, exit.
+                # Skips the entire sync + notification + retry pipeline.
+                if dry_run:
+                    if api.requires_2sa:
+                        LOGGER.info(
+                            "DRY RUN: 2FA required — finish interactive auth first "
+                            "(see README), then re-run with --dry-run.",
+                        )
+                    else:
+                        _perform_dry_run(config, api, check_files=check_files)
+                    return
+
                 if not api.requires_2sa:
+                    # Trust-window check: record current cookie expiry and
+                    # fire a pre-emptive warning once if it's about to lapse.
+                    # Best-effort: any failure is logged + swallowed inside.
+                    _maybe_warn_trust_expiring(config, api, username)
+
                     # Authenticated: clear the 2FA trigger latch so a future
                     # re-auth episode requests a fresh push exactly once.
                     sync_state.two_fa_triggered = False
@@ -725,13 +1172,55 @@ def sync():
                     summary = SyncSummary()
 
                     # Perform syncs and collect statistics
-                    drive_stats = _perform_drive_sync(config, api, sync_state, drive_sync_interval)
-                    photos_stats = _perform_photos_sync(config, api, sync_state, photos_sync_interval)
+                    drive_stats = _perform_drive_sync(
+                        config,
+                        api,
+                        sync_state,
+                        drive_sync_interval,
+                    )
+                    photos_stats = _perform_photos_sync(
+                        config,
+                        api,
+                        sync_state,
+                        photos_sync_interval,
+                    )
 
                     # Populate summary with statistics
                     summary.drive_stats = drive_stats
                     summary.photo_stats = photos_stats
                     summary.sync_end_time = datetime.datetime.now()
+
+                    # Persist per-service last-sync state for the web
+                    # dashboard. Best-effort — if the JSON write fails
+                    # the sync itself is unaffected.
+                    try:
+                        from src import web_signals as _ws
+
+                        if drive_stats is not None:
+                            _ws.record_sync_completion(
+                                service="drive",
+                                files_downloaded=drive_stats.files_downloaded,
+                                files_skipped=drive_stats.files_skipped,
+                                files_removed=drive_stats.files_removed,
+                                errors=len(drive_stats.errors),
+                                duration_seconds=drive_stats.duration_seconds,
+                            )
+                        if photos_stats is not None:
+                            _ws.record_sync_completion(
+                                service="photos",
+                                files_downloaded=photos_stats.photos_downloaded,
+                                files_skipped=photos_stats.photos_skipped,
+                                errors=len(photos_stats.errors),
+                                duration_seconds=photos_stats.duration_seconds,
+                            )
+                    except (
+                        ImportError
+                    ):  # pragma: no cover — best-effort fallback for builds without web_signals
+                        pass
+                    except Exception as e:
+                        LOGGER.debug(
+                            f"web_signals: record_sync_completion raised: {e!s}",
+                        )
 
                     # Send usage statistics (anonymized summary data)
                     try:
@@ -748,7 +1237,9 @@ def sync():
                     should_send_notification = False
                     if has_drive_config and has_photos_config:
                         # Both services configured - send notification only when both have synced
-                        should_send_notification = drive_stats is not None and photos_stats is not None
+                        should_send_notification = (
+                            drive_stats is not None and photos_stats is not None
+                        )
                     elif has_drive_config and not has_photos_config:
                         # Only drive configured - send when drive synced
                         should_send_notification = drive_stats is not None
@@ -760,10 +1251,14 @@ def sync():
                         try:
                             notify.send_sync_summary(config=config, summary=summary)
                         except Exception as e:
-                            LOGGER.debug(f"Failed to send sync summary notification: {e!s}")
+                            LOGGER.debug(
+                                f"Failed to send sync summary notification: {e!s}",
+                            )
 
                     if not _check_services_configured(config):
-                        LOGGER.warning("Nothing to sync. Please add drive: and/or photos: section in config.yaml file.")
+                        LOGGER.warning(
+                            "Nothing to sync. Please add drive: and/or photos: section in config.yaml file.",
+                        )
                 else:
                     if not _handle_2fa_required(config, username, sync_state, api):
                         break
@@ -778,7 +1273,46 @@ def sync():
         _log_next_sync_time(sleep_for)
 
         if _should_exit_oneshot_mode(config):
-            LOGGER.info("All configured sync intervals are negative, exiting oneshot mode...")
+            LOGGER.info(
+                "All configured sync intervals are negative, exiting oneshot mode...",
+            )
             break
 
-        sleep(sleep_for)
+        # Interruptible sleep -- poll the web-signal force-sync sentinels
+        # every few seconds so the "Sync now" button stays responsive even
+        # mid-long-interval. Without this, a user tap during a multi-hour
+        # drive sleep would wait the full remaining duration.
+        _interruptible_sleep(sleep_for)
+
+
+def _interruptible_sleep(total_seconds: int) -> None:
+    """Sleep up to ``total_seconds`` in short chunks, returning early
+    when ``web_signals.pending_force_syncs()`` reports any sentinel.
+
+    The ``import src.web_signals`` is best-effort so a vanilla mandarons
+    build without the web-UI module still runs (it falls back to a
+    single ``sleep(total_seconds)``).
+    """
+    _CHUNK = 2  # seconds — tradeoff: shorter = more responsive, more wakeups
+    try:
+        from src import web_signals as _ws
+    except ImportError:  # pragma: no cover — vanilla-mandarons fallback
+        sleep(total_seconds)
+        return
+
+    # Short intervals (<= one chunk) sleep in a single call so the
+    # existing tests that count sleep invocations still match. The
+    # chunking only matters for long intervals where the user might
+    # tap "Sync now" mid-sleep -- those become multiple short sleeps
+    # with a sentinel poll between each.
+    if total_seconds <= _CHUNK:
+        sleep(total_seconds)
+        return
+
+    remaining = total_seconds
+    while remaining > 0:
+        chunk = min(_CHUNK, remaining)
+        sleep(chunk)
+        remaining -= chunk
+        if _ws.pending_force_syncs():
+            return
