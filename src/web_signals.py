@@ -187,6 +187,8 @@ def _save_state(state: dict[str, dict[str, Any]]) -> None:
 
 
 _TRUST_STATE_KEY = "_trust"
+_AUTH_BLOCKED_STATE_KEY = "_auth_blocked"
+_AUTH_METHOD_STATE_KEY = "_auth_method"
 
 
 def record_trust_state(
@@ -216,6 +218,57 @@ def record_trust_state(
 def get_trust_state() -> dict[str, Any]:
     """Return persisted trust state. Empty dict if never recorded."""
     return _load_state().get(_TRUST_STATE_KEY, {})
+
+
+def record_auth_blocked(*, blocked: bool, reason: str | None = None) -> None:
+    """Record whether the sync loop is currently unable to authenticate.
+
+    ``_detect_auth_state`` can only see on-disk signals -- a username in
+    the config and a password in the keyring -- so it reports "ready" for
+    an account that is in fact stuck on a second factor. Only the sync
+    loop knows it is failing, so it publishes that here and the dashboard
+    stops claiming everything is healthy while nothing is syncing.
+    """
+    state = _load_state()
+    state[_AUTH_BLOCKED_STATE_KEY] = {
+        "blocked": bool(blocked),
+        "reason": reason,
+        "last_updated": time.time(),
+    }
+    _save_state(state)
+
+
+def get_auth_blocked() -> dict[str, Any]:
+    """Return the recorded auth-blocked state. Empty dict if never recorded."""
+    entry = _load_state().get(_AUTH_BLOCKED_STATE_KEY)
+    return entry if isinstance(entry, dict) else {}
+
+
+def record_auth_method(*, username: str, method: str) -> None:
+    """Remember which second factor Apple demands for this Apple ID.
+
+    Keyed by username because the factor is an account property, not a
+    container property -- an operator who repoints the container at a
+    different Apple ID must not inherit the previous account's mode.
+
+    ``method`` is "security_key" once Apple has answered with an
+    ``fsaChallenge`` (hardware key or passkey enrolled, which disables
+    6-digit codes entirely), otherwise "code".
+    """
+    state = _load_state()
+    entry = state.get(_AUTH_METHOD_STATE_KEY, {})
+    entry[username] = {"method": method, "last_seen": time.time()}
+    state[_AUTH_METHOD_STATE_KEY] = entry
+    _save_state(state)
+
+
+def get_auth_method(username: str) -> str | None:
+    """Return the recorded second factor for ``username``, or None if unknown."""
+    entry = _load_state().get(_AUTH_METHOD_STATE_KEY, {}).get(username)
+    if not isinstance(entry, dict):
+        return None
+    method = entry.get("method")
+    return method if isinstance(method, str) else None
 
 
 def format_relative_time(epoch_seconds: float, *, now: float | None = None) -> str:

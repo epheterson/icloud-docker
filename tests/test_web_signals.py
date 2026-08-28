@@ -319,3 +319,91 @@ class TestPerLibrarySyncState(unittest.TestCase):
 
     def test_no_state_recorded_yet(self):
         self.assertEqual(self.ws.get_library_states(), {})
+
+
+class TestAuthBlockedState(unittest.TestCase):
+    """``record_auth_blocked`` / ``get_auth_blocked``.
+
+    The dashboard cannot infer this: a username in the config and a
+    password in the keyring both look correct while an account is stuck on
+    a second factor, so only the sync loop can report it."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._patcher = patch.object(web_signals, "_config_dir", return_value=self.tmp)
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_unrecorded_is_empty(self):
+        self.assertEqual(web_signals.get_auth_blocked(), {})
+
+    def test_records_blocked_with_reason(self):
+        web_signals.record_auth_blocked(blocked=True, reason="2fa_required")
+        entry = web_signals.get_auth_blocked()
+        self.assertTrue(entry["blocked"])
+        self.assertEqual(entry["reason"], "2fa_required")
+
+    def test_clearing_unblocks(self):
+        web_signals.record_auth_blocked(blocked=True, reason="2fa_required")
+        web_signals.record_auth_blocked(blocked=False)
+        self.assertFalse(web_signals.get_auth_blocked()["blocked"])
+
+    def test_malformed_entry_is_empty(self):
+        web_signals._save_state({web_signals._AUTH_BLOCKED_STATE_KEY: "oops"})  # noqa: SLF001
+        self.assertEqual(web_signals.get_auth_blocked(), {})
+
+
+class TestAuthMethodRecord(unittest.TestCase):
+    """``record_auth_method`` / ``get_auth_method`` — per-account memory of
+    which second factor Apple demands."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._patcher = patch.object(web_signals, "_config_dir", return_value=self.tmp)
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_unknown_account_returns_none(self):
+        self.assertIsNone(web_signals.get_auth_method("nobody@icloud.com"))
+
+    def test_round_trips_the_recorded_method(self):
+        web_signals.record_auth_method(
+            username="a@icloud.com",
+            method="security_key",
+        )
+        self.assertEqual(web_signals.get_auth_method("a@icloud.com"), "security_key")
+
+    def test_keyed_per_account_not_globally(self):
+        """The factor is an account property — repointing the container at
+        a second Apple ID must not inherit the first one's mode."""
+        web_signals.record_auth_method(username="a@icloud.com", method="security_key")
+        web_signals.record_auth_method(username="b@icloud.com", method="code")
+        self.assertEqual(web_signals.get_auth_method("a@icloud.com"), "security_key")
+        self.assertEqual(web_signals.get_auth_method("b@icloud.com"), "code")
+
+    def test_rerecording_overwrites(self):
+        """An account that drops its security keys reverts to codes."""
+        web_signals.record_auth_method(username="a@icloud.com", method="security_key")
+        web_signals.record_auth_method(username="a@icloud.com", method="code")
+        self.assertEqual(web_signals.get_auth_method("a@icloud.com"), "code")
+
+    def test_malformed_entry_returns_none(self):
+        """A hand-edited or truncated state file must not raise."""
+        web_signals._save_state({web_signals._AUTH_METHOD_STATE_KEY: {"a": "oops"}})  # noqa: SLF001
+        self.assertIsNone(web_signals.get_auth_method("a"))
+
+    def test_non_string_method_returns_none(self):
+        web_signals._save_state(  # noqa: SLF001
+            {web_signals._AUTH_METHOD_STATE_KEY: {"a": {"method": 7}}},  # noqa: SLF001
+        )
+        self.assertIsNone(web_signals.get_auth_method("a"))
