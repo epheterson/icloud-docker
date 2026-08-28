@@ -311,6 +311,89 @@ def parse_max_threads_value(max_threads_config: Any, default_max_threads: int) -
     return max_threads
 
 
+def get_web_ui_enabled(config: dict) -> bool:
+    """Return whether the embedded web UI should start on container boot.
+
+    Default: **False** — opt-in. Existing mandarons installs see no
+    behaviour change; only users who explicitly set
+    ``app.web_ui.enabled: true`` open the port.
+    """
+    return bool(
+        get_config_value_or_default(
+            config=config,
+            config_path=["app", "web_ui", "enabled"],
+            default=False,
+        ),
+    )
+
+
+def get_web_ui_host(config: dict) -> str:
+    """Web UI bind address.
+
+    Default ``127.0.0.1`` — the web UI accepts the user's Apple ID
+    password on POST /auth/password with no built-in authentication and
+    no CSRF token (the feature assumes a reverse-proxy trust boundary
+    in front of it). Defaulting to loopback means the credential-
+    accepting form is never exposed to LAN/public on a vanilla install.
+    Users who run behind a reverse proxy or want explicit LAN exposure
+    set ``app.web_ui.host: 0.0.0.0`` consciously.
+    """
+    return str(
+        get_config_value_or_default(
+            config=config,
+            config_path=["app", "web_ui", "host"],
+            default="127.0.0.1",
+        ),
+    )
+
+
+def get_web_ui_port(config: dict) -> int:
+    """Web UI TCP port. Default ``8080``. Coexists with mandarons' legacy
+    ``EXPOSE 80`` (unused) — no port collision."""
+    return int(
+        get_config_value_or_default(
+            config=config,
+            config_path=["app", "web_ui", "port"],
+            default=8080,
+        ),
+    )
+
+
+def get_web_ui_public_url(config: dict) -> str | None:
+    """Public-facing URL for the web UI, used in notifications.
+
+    The daemon only knows its local bind host:port; the user-facing URL
+    (e.g. ``https://icloud.zosia.io`` behind a reverse proxy) must be
+    declared explicitly. When unset, notifications fall back to
+    ``http://{host}:{port}`` and log a one-shot warning at startup.
+    """
+    value = get_config_value_or_default(
+        config=config,
+        config_path=["app", "web_ui", "public_url"],
+        default=None,
+    )
+    if value is None:
+        return None
+    return str(value).rstrip("/")
+
+
+def get_trust_expiry_warn_days(config: dict) -> int:
+    """Warn this many days before Apple's trust cookie expires.
+
+    Default 7. The check + notification fires once per cookie-lifetime
+    when ``trust_days_remaining`` first drops below this threshold so
+    the user can tap refresh-trust *before* the sync loop hits a
+    failed-auth state.
+    """
+    return int(
+        get_config_value_or_default(
+            config=config,
+            config_path=["app", "trust_expiry_warn_days"],
+            default=7,
+        ),
+    )
+
+
 def get_app_max_threads(config: dict) -> int:
     """Return app-level max threads from config with support for 'auto' value.
 
@@ -764,9 +847,37 @@ def validate_file_sizes(file_sizes: list[str]) -> list[str]:
     return validated_sizes if validated_sizes else ["original"]
 
 
-def get_photos_libraries_filter(
-    config: dict, base_config_path: list[str],
-) -> list[str] | None:
+def get_photos_library_destinations(config: dict) -> dict[str, str]:
+    """Get per-library destination subdirectory mapping from photos config.
+
+    Optional config block (under top-level ``photos``):
+
+    .. code-block:: yaml
+
+        photos:
+          destination: photos
+          library_destinations:
+            PrimarySync: personal
+            SharedLibrary: shared
+
+    When set, photos from each library are written to
+    ``<photos.destination>/<library_destinations[library]>/...`` instead of
+    sharing one destination tree. When unset (the default), all libraries
+    share the single ``photos.destination`` path — preserving the historical
+    behaviour of mandarons/icloud-docker.
+
+    Returns:
+        Dict mapping library name → subdirectory relative to ``photos.destination``.
+        Returns ``{}`` if not configured (backward-compatible default).
+    """
+    config_path = ["photos", "library_destinations"]
+    mapping = get_config_value_or_none(config=config, config_path=config_path)
+    if not mapping or not isinstance(mapping, dict):
+        return {}
+    return {str(k): str(v) for k, v in mapping.items()}
+
+
+def get_photos_libraries_filter(config: dict, base_config_path: list[str]) -> list[str] | None:
     """Get libraries filter from photos config.
 
     Args:
