@@ -10,7 +10,7 @@ import os
 from datetime import timezone
 from typing import Any
 
-from src import configure_icloudpy_logging, get_logger
+from src import DEFAULT_REQUEST_TIMEOUT_SEC, configure_icloudpy_logging, get_logger
 from src.drive_package_processing import process_package
 
 # Configure icloudpy logging immediately after import
@@ -20,7 +20,10 @@ LOGGER = get_logger()
 
 
 def download_file(
-    item: Any, local_file: str, flatten_packages: bool = False,
+    item: Any,
+    local_file: str,
+    flatten_packages: bool = False,
+    timeout: int = DEFAULT_REQUEST_TIMEOUT_SEC,
 ) -> str | None:
     """Download a file from iCloud to local filesystem.
 
@@ -36,6 +39,10 @@ def download_file(
             bundle-directory semantics aren't needed and single-file
             storage simplifies dedup / restoration. Opt-in via
             ``drive.flatten_packages: true`` in config.yaml.
+        timeout: HTTP read timeout in seconds. Without one a stalled
+            connection blocks its worker thread for the life of the
+            process -- nothing raises, so nothing retries and nothing
+            restarts, and the sync simply stops.
 
     Returns:
         Path to the downloaded/processed file, or None if download failed
@@ -45,7 +52,7 @@ def download_file(
 
     LOGGER.info(f"Downloading {local_file} ...")
     try:
-        with item.open(stream=True) as response:
+        with item.open(stream=True, timeout=timeout) as response:
             with open(local_file, "wb") as file_out:
                 for chunk in response.iter_content(4 * 1024 * 1024):
                     file_out.write(chunk)

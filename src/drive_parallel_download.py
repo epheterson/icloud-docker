@@ -14,7 +14,12 @@ from threading import Lock
 from typing import Any
 from urllib.parse import unquote
 
-from src import config_parser, configure_icloudpy_logging, get_logger
+from src import (
+    DEFAULT_REQUEST_TIMEOUT_SEC,
+    config_parser,
+    configure_icloudpy_logging,
+    get_logger,
+)
 from src.drive_file_download import download_file
 from src.drive_file_existence import file_exists, is_package, package_bundle_unchanged, package_exists
 from src.drive_filtering import wanted_file
@@ -93,6 +98,7 @@ def collect_file_for_download(
             "is_package": True,
             "files": files,
             "flatten_packages": flatten_packages,
+            "timeout": config_parser.get_drive_request_timeout(config),
         }
 
     # File/directory doesn't exist locally (or was an outdated regular file that needs
@@ -117,6 +123,7 @@ def collect_file_for_download(
         "is_package": item_is_package,
         "files": files,
         "flatten_packages": flatten_packages,
+        "timeout": timeout,
     }
 
 
@@ -141,6 +148,7 @@ def download_file_task(download_info: dict[str, Any]) -> bool:
             item=item,
             local_file=local_file,
             flatten_packages=download_info.get("flatten_packages", False),
+            timeout=download_info.get("timeout", DEFAULT_REQUEST_TIMEOUT_SEC),
         )
         if not downloaded_file:
             return False
