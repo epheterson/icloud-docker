@@ -375,6 +375,37 @@ def _build_status(config: dict | None) -> dict[str, Any]:
     }
 
 
+# Apple's own answer when a zone it created is not readable by anyone. Seen
+# on TestSharedCollection-SilentMigration-* zones, which Apple attaches to an
+# account during its own backend migrations and then never serves.
+_APPLE_UNAVAILABLE_MARKERS = ("BAD_REQUEST", "ZONE_NOT_FOUND")
+
+
+def _is_permanently_unavailable(entry: dict[str, Any]) -> bool:
+    """True for a library that is failing, inert, and not ours to fix.
+
+    Three conditions, all required. It is failing now; it has **never**
+    completed a sync, so there is nothing on disk to lose track of; and
+    Apple's error is one it returns for a zone that cannot be read at all.
+
+    The point is to keep the word "Failed" meaningful. Four permanent
+    Apple-side zones sitting red forever trains the eye to skip that
+    column, which is exactly when a real library failure goes unnoticed.
+    A library that has ever synced stays visible however it fails, and so
+    does one failing for any other reason -- those are the ones worth
+    looking at.
+
+    Deliberately decided from recorded state rather than a filesystem
+    probe: the dashboard renders this on every load, and "has it ever
+    completed" already answers "is there anything there" without adding
+    a stat per library to the page path.
+    """
+    if entry.get("state") != "failed" or entry.get("completed_at"):
+        return False
+    error = str(entry.get("error") or "")
+    return any(marker in error for marker in _APPLE_UNAVAILABLE_MARKERS)
+
+
 def _build_libraries(library_destinations: dict[str, str]) -> list[dict[str, Any]]:
     """One row per photo library: where it goes and how it last went.
 
@@ -403,6 +434,7 @@ def _build_libraries(library_destinations: dict[str, str]) -> list[dict[str, Any
                 "completed_relative": (
                     web_signals.format_relative_time(completed_at) if completed_at else None
                 ),
+                "unavailable": _is_permanently_unavailable(entry),
             },
         )
     return rows
