@@ -103,8 +103,15 @@
     .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
     .btn-small { font-size: 13px; padding: 7px 12px; min-height: 32px; }
 
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
-    @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+    /* minmax(0, 1fr), not 1fr: a bare 1fr is minmax(auto, 1fr), and that auto
+       floor resolves to the item's min-content width. Library names are
+       white-space: nowrap, so min-content is the whole
+       TestSharedCollection-SilentMigration-<uuid> string -- the track grows
+       past the viewport, the card scrolls the page sideways on a phone, and
+       the ellipsis on .lib-name never fires because its container widened
+       instead of constraining. */
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-bottom: 28px; }
+    @media (max-width: 720px) { .grid { grid-template-columns: minmax(0, 1fr); } }
 
     /* Mobile breakpoint — narrower than the existing 720px grid trigger
        because the status row + per-card actions need rewrapping before
