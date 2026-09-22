@@ -5,5 +5,7 @@
 icloudpy @ git+https://github.com/epheterson/icloudpy.git@feat/security-key
 ruamel.yaml==0.19.1
 python-magic==0.4.27
-requests~=2.32.3
+# Follows icloudpy's own exact pin. ~=2.32.3 means <2.33, which cannot be
+# resolved against the security-key branch and fails the install outright.
+requests==2.34.2
 flask==3.1.3
