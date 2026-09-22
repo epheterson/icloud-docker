@@ -34,6 +34,71 @@ LOGGER = get_logger()
 _TRUST_COOKIE_NAME = "X-APPLE-WEBAUTH-HSA-TRUST"
 
 
+def _detect_security_key_account(api, username: str) -> bool:
+    """True when Apple answers this account's second factor with an fsaChallenge.
+
+    Once security keys are enrolled Apple stops issuing 6-digit codes
+    altogether, so requesting a push sends nothing and listening for a
+    replied code waits for something that cannot arrive -- the loop did
+    both, every cycle, and told the user over Telegram to "reply the
+    6-digit code here". Detecting it here rather than waiting for someone
+    to open the dashboard is what lets the very first notification tell
+    the truth.
+
+    Recording the method also means ``notify`` picks the security-key
+    wording on this same pass, since it reads the same signal.
+
+    Best-effort in both directions: icloudpy without security-key support
+    has no such attribute, and no probe failure may break the retry loop.
+    """
+    try:
+        challenge = getattr(api, "security_key_challenge", None)
+    except Exception as e:  # noqa: BLE001 - a probe must never break the loop
+        LOGGER.debug(f"security-key probe failed: {e!s}")
+        return False
+    # Shape, not truthiness. icloudpy returns a mapping carrying "challenge"
+    # and "keyHandles", or None -- anything else (a stub, a changed API, a
+    # sentinel) must not be mistaken for Apple demanding a key, because the
+    # cost of a false positive is suppressing the real code flow.
+    if not (isinstance(challenge, dict) and challenge.get("challenge")):
+        return False
+    try:
+        from src import web_signals
+
+        web_signals.record_auth_method(username=username, method="security_key")
+    except Exception as e:  # noqa: BLE001 - wording is not worth an outage
+        LOGGER.debug(f"could not record auth method: {e!s}")
+    return True
+
+
+def _log_trust_revocation_hint(api) -> None:
+    """Say so when Apple rejected a trust token that has not expired.
+
+    Expiry and revocation are indistinguishable from the logs -- both
+    surface as 421 -- but they mean opposite things for what to do next:
+    a refresh schedule prevents the first and can do nothing about the
+    second. Apple drops trust on security events, so naming it saves
+    someone auditing the refresh logic for a bug that is not there.
+    """
+    try:
+        expires_at = _read_trust_cookie_expiry(api)
+        if expires_at is None:
+            return
+        remaining = (
+            expires_at - datetime.datetime.now(tz=datetime.timezone.utc)
+        ).days
+        if remaining <= 0:
+            return
+        LOGGER.error(
+            f"The trust token had not expired -- it is valid for {remaining} "
+            f"more days (until {expires_at.date()}). Apple revoked it "
+            f"server-side, which typically follows a new trusted device, a "
+            f"password change, or a change to security keys.",
+        )
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug(f"trust revocation hint failed: {e!s}")
+
+
 def _read_trust_cookie_expiry(api) -> datetime.datetime | None:
     """Return the expiry datetime of Apple's HSA trust cookie, or None.
 
@@ -858,6 +923,16 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState, api):
     """
     LOGGER.error("Error: 2FA is required. Please log in.")
     _publish_auth_blocked(True, reason="2fa_required")
+    _log_trust_revocation_hint(api)
+    # Decided before anything is sent: it selects the notification wording
+    # and suppresses two steps that cannot succeed on such an account.
+    security_key = _detect_security_key_account(api, username)
+    if security_key:
+        LOGGER.error(
+            "This account signs in with a security key, so Apple will not "
+            "send a 6-digit code. Complete the ceremony on the dashboard "
+            "(/auth); the push request and the code listener are skipped.",
+        )
     sleep_for = config_parser.get_retry_login_interval(config=config)
 
     if sleep_for < 0:
@@ -870,7 +945,7 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState, api):
     # reset on successful auth) to avoid re-pushing every retry cycle -- the
     # default interval is 600s -- and tripping Apple's rate limits. Best-effort:
     # a failure here must not stop the retry loop.
-    if not sync_state.two_fa_triggered:
+    if not security_key and not sync_state.two_fa_triggered:
         try:
             api.trigger_2fa_push_notification()
             LOGGER.info("Requested a 2FA push notification to your trusted devices.")
@@ -890,7 +965,7 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState, api):
         region=server_region,
         dashboard_url=_resolve_dashboard_url(config),
     )
-    if config_parser.get_telegram_listen_enabled(config=config):
+    if not security_key and config_parser.get_telegram_listen_enabled(config=config):
         _wait_for_telegram_code(config=config, api=api, timeout_seconds=sleep_for)
     else:
         sleep(sleep_for)

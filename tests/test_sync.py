@@ -217,6 +217,32 @@ class TestSync(unittest.TestCase):
         self.assertTrue(any("Failed to request 2FA push notification" in e for e in captured[1]))
 
     @patch("src.sync.sleep")
+    @patch("src.sync.notify.send", return_value=None)
+    @patch("src.web_signals.record_auth_method")
+    def test_a_security_key_account_skips_the_push_and_the_listener(
+        self, _mock_record, _mock_notify, _mock_sleep,
+    ):
+        """Apple issues no code for such an account, so requesting a push sends
+        nothing and listening for a replied code waits for something that can
+        never arrive. Both must be suppressed, and the log must say why."""
+        sync_state = sync.SyncState()
+        api = Mock()
+        api.security_key_challenge = {"challenge": "abc", "keyHandles": ["k"]}
+
+        with patch("src.sync._wait_for_telegram_code") as wait:
+            with patch(
+                "src.config_parser.get_telegram_listen_enabled", return_value=True,
+            ):
+                with self.assertLogs(level="ERROR") as captured:
+                    self.assertTrue(self._run_2fa_handler(sync_state, api))
+
+        api.trigger_2fa_push_notification.assert_not_called()
+        wait.assert_not_called()
+        self.assertTrue(
+            any("signs in with a security key" in e for e in captured.output),
+        )
+
+    @patch("src.sync.sleep")
     @patch(target="keyring.get_password", return_value=data.VALID_PASSWORD)
     @patch(target="src.config_parser.get_username", return_value=data.AUTHENTICATED_USER)
     @patch("icloudpy.ICloudPyService")
@@ -1639,3 +1665,126 @@ class TestStaleLibraryStateCleanupIsBestEffort(unittest.TestCase):
             patch("src.config_parser.get_username", return_value=None),
         ):
             sync.sync()
+
+
+class TestSecurityKeyAccountsSkipTheCodeFlow(unittest.TestCase):
+    """Once security keys are enrolled Apple stops issuing 6-digit codes, so
+    requesting a push sends nothing and listening for a replied code waits for
+    something that cannot arrive. Both ran every cycle, and Telegram told the
+    user to reply a code that Apple would never send."""
+
+    def test_a_pending_challenge_is_detected_and_recorded(self):
+        from unittest.mock import MagicMock, patch
+
+        from src.sync import _detect_security_key_account
+
+        api = MagicMock()
+        api.security_key_challenge = {"challenge": "abc", "keyHandles": ["k"]}
+        with patch("src.web_signals.record_auth_method") as record:
+            self.assertTrue(_detect_security_key_account(api, "a@b.com"))
+        record.assert_called_once_with(username="a@b.com", method="security_key")
+
+    def test_no_challenge_means_the_ordinary_code_flow(self):
+        from unittest.mock import MagicMock
+
+        from src.sync import _detect_security_key_account
+
+        api = MagicMock()
+        api.security_key_challenge = None
+        self.assertFalse(_detect_security_key_account(api, "a@b.com"))
+
+    def test_icloudpy_without_security_key_support_is_not_an_error(self):
+        from src.sync import _detect_security_key_account
+
+        class Old:
+            """No security_key_challenge attribute at all."""
+
+        self.assertFalse(_detect_security_key_account(Old(), "a@b.com"))
+
+    def test_a_probe_that_raises_does_not_break_the_retry_loop(self):
+        from src.sync import _detect_security_key_account
+
+        class Boom:
+            @property
+            def security_key_challenge(self):
+                msg = "apple said no"
+                raise RuntimeError(msg)
+
+        self.assertFalse(_detect_security_key_account(Boom(), "a@b.com"))
+
+    def test_recording_failure_still_reports_the_security_key(self):
+        """Wording is not worth losing the suppression that matters."""
+        from unittest.mock import MagicMock, patch
+
+        from src.sync import _detect_security_key_account
+
+        api = MagicMock()
+        api.security_key_challenge = {"challenge": "abc", "keyHandles": ["k"]}
+        with patch(
+            "src.web_signals.record_auth_method",
+            side_effect=OSError("read-only fs"),
+        ):
+            self.assertTrue(_detect_security_key_account(api, "a@b.com"))
+
+
+class TestRevocationIsNamedSeparatelyFromExpiry(unittest.TestCase):
+    """Expiry and revocation both surface as 421, but a refresh schedule
+    prevents one and can do nothing about the other."""
+
+    def test_a_still_valid_token_is_reported_as_revoked(self):
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from src.sync import _log_trust_revocation_hint
+
+        future = datetime.datetime.now(tz=datetime.timezone.utc) + datetime.timedelta(days=58)
+        with patch("src.sync._read_trust_cookie_expiry", return_value=future):
+            with self.assertLogs(level="ERROR") as captured:
+                _log_trust_revocation_hint(MagicMock())
+        joined = "\n".join(captured.output)
+        self.assertIn("had not expired", joined)
+        self.assertIn("revoked it", joined)
+
+    def test_an_actually_expired_token_says_nothing(self):
+        import datetime
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        from src.sync import _log_trust_revocation_hint
+
+        past = datetime.datetime.now(tz=datetime.timezone.utc) - datetime.timedelta(days=1)
+        with patch("src.sync._read_trust_cookie_expiry", return_value=past):
+            with patch.object(logging.getLogger(), "error") as err:
+                _log_trust_revocation_hint(MagicMock())
+        err.assert_not_called()
+
+    def test_no_trust_cookie_says_nothing(self):
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        from src.sync import _log_trust_revocation_hint
+
+        with patch("src.sync._read_trust_cookie_expiry", return_value=None):
+            with patch.object(logging.getLogger(), "error") as err:
+                _log_trust_revocation_hint(MagicMock())
+        err.assert_not_called()
+
+    def test_a_raising_reader_is_swallowed(self):
+        from unittest.mock import MagicMock, patch
+
+        from src.sync import _log_trust_revocation_hint
+
+        with patch("src.sync._read_trust_cookie_expiry", side_effect=RuntimeError("x")):
+            _log_trust_revocation_hint(MagicMock())  # must not raise
+
+    def test_a_non_mapping_is_not_a_challenge(self):
+        """A false positive suppresses the real code flow, so anything that is
+        not Apple's mapping must not count -- truthiness alone is not enough."""
+        from unittest.mock import MagicMock
+
+        from src.sync import _detect_security_key_account
+
+        for value in (MagicMock(), object(), "yes", 1, {}, {"keyHandles": ["k"]}):
+            api = MagicMock()
+            api.security_key_challenge = value
+            self.assertFalse(_detect_security_key_account(api, "a@b.com"))
