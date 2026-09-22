@@ -968,7 +968,7 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState, api):
     if not security_key and config_parser.get_telegram_listen_enabled(config=config):
         _wait_for_telegram_code(config=config, api=api, timeout_seconds=sleep_for)
     else:
-        _interruptible_sleep(sleep_for)
+        _auth_retry_sleep(sleep_for)
     return True
 
 
@@ -989,7 +989,7 @@ def _handle_auth_transport_error(config, username: str, sync_state: SyncState, e
         return False
     sleep_for = max(sleep_for, _AUTH_BACKOFF_FLOOR_SEC)
     _log_retry_time(sleep_for)
-    _interruptible_sleep(sleep_for)
+    _auth_retry_sleep(sleep_for)
     return True
 
 
@@ -1019,7 +1019,7 @@ def _handle_sync_error(config, error, drive_sync_interval, photos_sync_interval)
     if configured:
         sleep_for = max(sleep_for, min(configured))
     _log_retry_time(sleep_for)
-    _interruptible_sleep(sleep_for)
+    _auth_retry_sleep(sleep_for)
     return True
 
 
@@ -1161,7 +1161,7 @@ def _handle_password_error(config, username: str, sync_state: SyncState):
         region=server_region,
         dashboard_url=_resolve_dashboard_url(config),
     )
-    _interruptible_sleep(sleep_for)
+    _auth_retry_sleep(sleep_for)
     return True
 
 
@@ -1175,7 +1175,10 @@ def _log_retry_time(sleep_for: int):
     next_sync = (
         datetime.datetime.now() + datetime.timedelta(seconds=sleep_for)
     ).strftime("%c")
-    LOGGER.info(f"Retrying login at {next_sync} ...")
+    # "or sooner": the wait ends early when a re-auth completes in the web UI.
+    # Without saying so the log states a time the code may not honour, and
+    # anyone reconstructing a rate-limit episode from it reads a fiction.
+    LOGGER.info(f"Retrying login at {next_sync} (or sooner, if you re-auth) ...")
 
 
 def _calculate_next_sync_schedule(config, sync_state: SyncState):
@@ -1546,6 +1549,42 @@ def sync(dry_run: bool = False, check_files: int | None = None):
         # mid-long-interval. Without this, a user tap during a multi-hour
         # drive sleep would wait the full remaining duration.
         _interruptible_sleep(sleep_for)
+
+
+def _auth_retry_sleep(total_seconds: int) -> None:
+    """Wait between sign-in attempts, ending early only on a completed re-auth.
+
+    Deliberately does not honour the force-sync sentinel that
+    ``_interruptible_sleep`` polls. That one is a dashboard button, and
+    ``_handle_auth_transport_error`` raises its wait to
+    ``_AUTH_BACKOFF_FLOOR_SEC`` precisely because Apple answers a
+    rate-limited account with 409 on /signin/init -- letting a button
+    collapse that floor turns a stalled dashboard into a way to extend
+    the lockout, a couple of seconds at a time.
+
+    A completed re-auth is different: it is proof the account is reachable
+    again, so serving out the rest of an interval that began before the
+    problem was solved helps nobody.
+    """
+    _CHUNK = 2
+    try:
+        from src import web_signals as _ws
+    except ImportError:  # pragma: no cover - vanilla-mandarons fallback
+        sleep(total_seconds)
+        return
+
+    if total_seconds <= _CHUNK:
+        sleep(total_seconds)
+        return
+
+    remaining = total_seconds
+    while remaining > 0:
+        chunk = min(_CHUNK, remaining)
+        sleep(chunk)
+        remaining -= chunk
+        if _ws.consume_reauth_completed():
+            LOGGER.info("Re-auth completed -- ending the retry wait early.")
+            return
 
 
 def _interruptible_sleep(total_seconds: int) -> None:

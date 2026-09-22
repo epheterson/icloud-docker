@@ -407,3 +407,44 @@ class TestAuthMethodRecord(unittest.TestCase):
             {web_signals._AUTH_METHOD_STATE_KEY: {"a": {"method": 7}}},  # noqa: SLF001
         )
         self.assertIsNone(web_signals.get_auth_method("a"))
+
+
+class TestTheReauthSentinelIsItsOwnSignal(unittest.TestCase):
+    """Separate from force-sync on purpose: that one is a button meaning
+    "sync everything now", this one means only "the wait you are serving is
+    over". Sharing them let a dashboard tap collapse the anti-throttle
+    backoff that keeps us from extending an Apple rate-limit."""
+
+    def test_round_trip(self):
+        import tempfile
+        from unittest.mock import patch
+
+        from src import web_signals
+
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(web_signals, "_config_dir", return_value=d):
+                self.assertFalse(web_signals.consume_reauth_completed())
+                self.assertTrue(web_signals.record_reauth_completed())
+                self.assertTrue(web_signals.consume_reauth_completed())
+                # Consumed exactly once.
+                self.assertFalse(web_signals.consume_reauth_completed())
+
+    def test_an_unwritable_config_dir_is_reported_not_raised(self):
+        from unittest.mock import patch
+
+        from src import web_signals
+
+        with patch.object(web_signals, "_config_dir", return_value="/proc/x/y"):
+            self.assertFalse(web_signals.record_reauth_completed())
+
+    def test_an_unlink_error_other_than_missing_is_swallowed(self):
+        import tempfile
+        from unittest.mock import patch
+
+        from src import web_signals
+
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(web_signals, "_config_dir", return_value=d):
+                web_signals.record_reauth_completed()
+                with patch("os.unlink", side_effect=PermissionError("nope")):
+                    self.assertFalse(web_signals.consume_reauth_completed())

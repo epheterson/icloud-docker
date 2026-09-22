@@ -1297,7 +1297,7 @@ class TestSigninTransportFailures(unittest.TestCase):
         from src import sync
 
         config = {"app": {"credentials": {"retry_login_interval": 60}}}
-        with patch.object(sync, "_interruptible_sleep") as slept:
+        with patch.object(sync, "_auth_retry_sleep") as slept:
             keep_going = sync._handle_auth_transport_error(  # noqa: SLF001
                 config,
                 "a@icloud.com",
@@ -1458,7 +1458,7 @@ class TestServiceUnavailableIsNotASigninFailure(unittest.TestCase):
             # The retry wait is chunked now so a completed re-auth can cut it
             # short; drive the loop from that seam rather than from sleep,
             # whose call count is an implementation detail of the chunking.
-            patch.object(sync, "_interruptible_sleep", side_effect=[None, SystemExit]) as slept,
+            patch.object(sync, "_auth_retry_sleep", side_effect=[None, SystemExit]) as slept,
             patch("src.config_parser.get_username", return_value="a@icloud.com"),
         ):
             with self.assertRaises(SystemExit):
@@ -1531,7 +1531,7 @@ class TestPostAuthFailuresAreNotSigninFailures(unittest.TestCase):
 
         from src import sync
 
-        with patch.object(sync, "_interruptible_sleep") as slept:
+        with patch.object(sync, "_auth_retry_sleep") as slept:
             kept_looping = sync._handle_sync_error(  # noqa: SLF001
                 self._config(retry=600, drive_interval=43200),
                 Exception("boom"),
@@ -1546,7 +1546,7 @@ class TestPostAuthFailuresAreNotSigninFailures(unittest.TestCase):
 
         from src import sync
 
-        with patch.object(sync, "_interruptible_sleep") as slept:
+        with patch.object(sync, "_auth_retry_sleep") as slept:
             sync._handle_sync_error(  # noqa: SLF001
                 self._config(retry=600), Exception("boom"), -1, -1,
             )
@@ -1606,7 +1606,7 @@ class TestUnreadableConfigDoesNotKillTheDaemon(unittest.TestCase):
             patch.object(sync, "_load_configuration", side_effect=configs),
             patch.object(sync, "_log_sync_intervals_at_startup"),
             patch.object(sync, "sleep") as slept,
-            patch.object(sync, "_interruptible_sleep"),
+            patch.object(sync, "_auth_retry_sleep"),
             patch("src.config_parser.get_username", return_value=None),
         ):
             sync.sync()
@@ -1625,7 +1625,7 @@ class TestUnreadableConfigDoesNotKillTheDaemon(unittest.TestCase):
             patch.object(sync, "_load_configuration", side_effect=side_effects),
             patch.object(sync, "_log_sync_intervals_at_startup"),
             patch.object(sync, "sleep") as slept,
-            patch.object(sync, "_interruptible_sleep"),
+            patch.object(sync, "_auth_retry_sleep"),
             patch("src.config_parser.get_username", return_value=None),
         ):
             sync.sync()
@@ -1664,7 +1664,7 @@ class TestStaleLibraryStateCleanupIsBestEffort(unittest.TestCase):
                 "clear_stale_library_states",
                 side_effect=OSError("read-only fs"),
             ),
-            patch.object(sync, "_interruptible_sleep"),
+            patch.object(sync, "_auth_retry_sleep"),
             patch("src.config_parser.get_username", return_value=None),
         ):
             sync.sync()
@@ -1806,7 +1806,7 @@ class TestAReauthCutsTheRetryWaitShort(unittest.TestCase):
         from src import sync
 
         config = {"app": {"credentials": {"retry_login_interval": 600}}}
-        with patch.object(sync, "_interruptible_sleep") as slept:
+        with patch.object(sync, "_auth_retry_sleep") as slept:
             with patch.object(sync, "notify"):
                 keep_going = sync._handle_password_error(  # noqa: SLF001
                     config, "a@icloud.com", sync.SyncState(),
@@ -1814,18 +1814,17 @@ class TestAReauthCutsTheRetryWaitShort(unittest.TestCase):
         self.assertTrue(keep_going)
         slept.assert_called_once_with(600)
 
-    def test_a_successful_web_reauth_raises_the_sync_sentinel(self):
-        """Same sentinel the "Sync now" button uses, so the retry sleep
-        returns within a chunk instead of sitting out the interval."""
+    def test_a_successful_web_reauth_raises_its_own_sentinel(self):
+        """Its own, not the one behind "Sync now" -- see the throttle test."""
         from unittest.mock import patch
 
         from src import web
 
-        with patch("src.web.web_signals.request_force_sync") as req:
-            web._wake_sync_loop()  # noqa: SLF001
-        self.assertEqual(
-            sorted(c.args[0] for c in req.call_args_list), ["drive", "photos"],
-        )
+        with patch("src.web.web_signals.record_reauth_completed") as rec:
+            with patch("src.web.web_signals.request_force_sync") as force:
+                web._wake_sync_loop()  # noqa: SLF001
+        rec.assert_called_once_with()
+        force.assert_not_called()
 
     def test_a_failed_nudge_is_not_an_error(self):
         """Missing the nudge costs a delay, never correctness -- it must not
@@ -1835,10 +1834,45 @@ class TestAReauthCutsTheRetryWaitShort(unittest.TestCase):
         from src import web
 
         with patch(
-            "src.web.web_signals.request_force_sync",
+            "src.web.web_signals.record_reauth_completed",
             side_effect=OSError("read-only"),
         ):
             web._wake_sync_loop()  # noqa: SLF001
+
+    def test_the_dashboard_button_cannot_collapse_the_throttle_backoff(self):
+        """Apple answers a rate-limited account with 409 on /signin/init, so
+        _AUTH_BACKOFF_FLOOR_SEC exists to stop us extending the lockout. A
+        force-sync sentinel -- a button anyone can tap from a stalled page --
+        must not shorten that wait; only a completed re-auth may."""
+        from unittest.mock import patch
+
+        from src import sync
+
+        with patch.object(sync, "sleep") as slept:
+            with patch("src.web_signals.pending_force_syncs", return_value=["drive"]):
+                with patch("src.web_signals.consume_reauth_completed", return_value=False):
+                    sync._auth_retry_sleep(10)  # noqa: SLF001
+        # Served the whole interval in chunks rather than returning early.
+        self.assertEqual(sum(c.args[0] for c in slept.call_args_list), 10)
+
+    def test_a_completed_reauth_does_end_the_wait(self):
+        from unittest.mock import patch
+
+        from src import sync
+
+        with patch.object(sync, "sleep") as slept:
+            with patch("src.web_signals.consume_reauth_completed", return_value=True):
+                sync._auth_retry_sleep(600)  # noqa: SLF001
+        self.assertLess(sum(c.args[0] for c in slept.call_args_list), 600)
+
+    def test_a_short_wait_is_a_single_sleep(self):
+        from unittest.mock import patch
+
+        from src import sync
+
+        with patch.object(sync, "sleep") as slept:
+            sync._auth_retry_sleep(1)  # noqa: SLF001
+        slept.assert_called_once_with(1)
 
 
 class TestTheLoopRetriesRatherThanExiting(unittest.TestCase):
@@ -1874,7 +1908,7 @@ class TestTheLoopRetriesRatherThanExiting(unittest.TestCase):
             patch.object(sync, "_authenticate_and_get_api", **kwargs),
             patch.object(sync, "notify"),
             patch.object(
-                sync, "_interruptible_sleep", side_effect=[None, SystemExit],
+                sync, "_auth_retry_sleep", side_effect=[None, SystemExit],
             ) as slept,
             patch("src.config_parser.get_username", return_value="a@icloud.com"),
         ):

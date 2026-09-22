@@ -652,6 +652,7 @@ def create_app(testing: bool = False) -> Flask:
             )
         except Exception as e:
             LOGGER.warning(f"Web UI keyring persist failed (non-fatal): {e!s}")
+        _wake_sync_loop()
         return redirect(url_for("dashboard"))
 
     @app.route("/auth/code", methods=["POST"])
@@ -740,6 +741,7 @@ def create_app(testing: bool = False) -> Flask:
             except Exception as e:
                 LOGGER.warning(f"Web UI keyring persist failed (non-fatal): {e!s}")
 
+            _wake_sync_loop()
             return redirect(url_for("dashboard"))
         finally:
             with _AUTH_LOCK:
@@ -867,6 +869,7 @@ def create_app(testing: bool = False) -> Flask:
             )
 
         if not api.requires_2fa:
+            _wake_sync_loop()
             return redirect(url_for("dashboard"))
 
         fsa = api.security_key_challenge
@@ -1153,6 +1156,7 @@ def create_app(testing: bool = False) -> Flask:
             # Trust window was still alive — nothing to do, sync loop is
             # already authenticated. Bounce back to the dashboard with
             # the success state.
+            _wake_sync_loop()
             return redirect(url_for("dashboard"))
 
         try:
@@ -1247,15 +1251,19 @@ def _wake_sync_loop() -> None:
     dashboard still say "sync is stopped", and waits out the remainder of an
     interval that began before the problem was solved.
 
-    Raising the same sentinel the "Sync now" button uses means the retry
-    sleep returns within a couple of seconds. Best-effort: failing to wake
-    costs a delay, never correctness.
+    Raises a sentinel of its own rather than the one behind "Sync now".
+    That button means "sync everything now", and borrowing it had two
+    costs: it queued a full photo re-enumeration nobody asked for, and it
+    let a dashboard button collapse the anti-throttle backoff that exists
+    because Apple answers a rate-limited account with 409 -- turning a
+    stalled page into a way to extend the lockout.
+
+    Best-effort: failing to wake costs a delay, never correctness.
     """
     try:
-        for service in ("drive", "photos"):
-            web_signals.request_force_sync(service)
+        web_signals.record_reauth_completed()
     except Exception as e:  # noqa: BLE001 - a missed nudge is not an error
-        LOGGER.debug(f"could not request a force sync: {e!s}")
+        LOGGER.debug(f"could not signal the completed re-auth: {e!s}")
 
 
 def _record_auth_method(username: str, method: str) -> None:
