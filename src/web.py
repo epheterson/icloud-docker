@@ -1003,6 +1003,7 @@ def create_app(testing: bool = False) -> Flask:
                     400,
                 )
             LOGGER.info("Web UI: security-key re-auth succeeded; session trusted.")
+            _wake_sync_loop()
             # The signer clears the clipboard itself once the signature is
             # read, so there is nothing left for the dashboard to do here.
             return redirect(url_for("dashboard"))
@@ -1203,6 +1204,26 @@ def _lookup_auth_method(status_payload: dict[str, Any]) -> str | None:
         return web_signals.get_auth_method(username)
     except Exception:  # pragma: no cover - never break rendering over state
         return None
+
+
+def _wake_sync_loop() -> None:
+    """Cut short the auth-retry wait after a re-auth succeeds.
+
+    The loop backs off for ``retry_login_interval`` between attempts -- six
+    hours on a typical install -- and cannot see that the session was fixed
+    underneath it. Without this the user completes the ceremony, watches the
+    dashboard still say "sync is stopped", and waits out the remainder of an
+    interval that began before the problem was solved.
+
+    Raising the same sentinel the "Sync now" button uses means the retry
+    sleep returns within a couple of seconds. Best-effort: failing to wake
+    costs a delay, never correctness.
+    """
+    try:
+        for service in ("drive", "photos"):
+            web_signals.request_force_sync(service)
+    except Exception as e:  # noqa: BLE001 - a missed nudge is not an error
+        LOGGER.debug(f"could not request a force sync: {e!s}")
 
 
 def _record_auth_method(username: str, method: str) -> None:

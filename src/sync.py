@@ -968,7 +968,7 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState, api):
     if not security_key and config_parser.get_telegram_listen_enabled(config=config):
         _wait_for_telegram_code(config=config, api=api, timeout_seconds=sleep_for)
     else:
-        sleep(sleep_for)
+        _interruptible_sleep(sleep_for)
     return True
 
 
@@ -989,7 +989,7 @@ def _handle_auth_transport_error(config, username: str, sync_state: SyncState, e
         return False
     sleep_for = max(sleep_for, _AUTH_BACKOFF_FLOOR_SEC)
     _log_retry_time(sleep_for)
-    sleep(sleep_for)
+    _interruptible_sleep(sleep_for)
     return True
 
 
@@ -1019,7 +1019,7 @@ def _handle_sync_error(config, error, drive_sync_interval, photos_sync_interval)
     if configured:
         sleep_for = max(sleep_for, min(configured))
     _log_retry_time(sleep_for)
-    sleep(sleep_for)
+    _interruptible_sleep(sleep_for)
     return True
 
 
@@ -1161,7 +1161,7 @@ def _handle_password_error(config, username: str, sync_state: SyncState):
         region=server_region,
         dashboard_url=_resolve_dashboard_url(config),
     )
-    sleep(sleep_for)
+    _interruptible_sleep(sleep_for)
     return True
 
 

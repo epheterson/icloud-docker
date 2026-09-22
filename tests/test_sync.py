@@ -1297,7 +1297,7 @@ class TestSigninTransportFailures(unittest.TestCase):
         from src import sync
 
         config = {"app": {"credentials": {"retry_login_interval": 60}}}
-        with patch.object(sync, "sleep") as slept:
+        with patch.object(sync, "_interruptible_sleep") as slept:
             keep_going = sync._handle_auth_transport_error(  # noqa: SLF001
                 config,
                 "a@icloud.com",
@@ -1455,7 +1455,10 @@ class TestServiceUnavailableIsNotASigninFailure(unittest.TestCase):
             patch.object(sync, "alive"),
             patch.object(sync, "_log_sync_intervals_at_startup"),
             patch.object(sync, "_authenticate_and_get_api", side_effect=error),
-            patch.object(sync, "sleep", side_effect=[None, SystemExit]) as slept,
+            # The retry wait is chunked now so a completed re-auth can cut it
+            # short; drive the loop from that seam rather than from sleep,
+            # whose call count is an implementation detail of the chunking.
+            patch.object(sync, "_interruptible_sleep", side_effect=[None, SystemExit]) as slept,
             patch("src.config_parser.get_username", return_value="a@icloud.com"),
         ):
             with self.assertRaises(SystemExit):
@@ -1528,7 +1531,7 @@ class TestPostAuthFailuresAreNotSigninFailures(unittest.TestCase):
 
         from src import sync
 
-        with patch.object(sync, "sleep") as slept:
+        with patch.object(sync, "_interruptible_sleep") as slept:
             kept_looping = sync._handle_sync_error(  # noqa: SLF001
                 self._config(retry=600, drive_interval=43200),
                 Exception("boom"),
@@ -1543,7 +1546,7 @@ class TestPostAuthFailuresAreNotSigninFailures(unittest.TestCase):
 
         from src import sync
 
-        with patch.object(sync, "sleep") as slept:
+        with patch.object(sync, "_interruptible_sleep") as slept:
             sync._handle_sync_error(  # noqa: SLF001
                 self._config(retry=600), Exception("boom"), -1, -1,
             )
@@ -1788,3 +1791,110 @@ class TestRevocationIsNamedSeparatelyFromExpiry(unittest.TestCase):
             api = MagicMock()
             api.security_key_challenge = value
             self.assertFalse(_detect_security_key_account(api, "a@b.com"))
+
+
+class TestAReauthCutsTheRetryWaitShort(unittest.TestCase):
+    """The loop backs off for retry_login_interval between attempts -- six
+    hours on a typical install -- and cannot see that the session was fixed
+    underneath it. Completing the ceremony then left the dashboard saying
+    "sync is stopped" for the remainder of an interval that began before the
+    problem was solved."""
+
+    def test_the_password_retry_wait_is_interruptible(self):
+        from unittest.mock import patch
+
+        from src import sync
+
+        config = {"app": {"credentials": {"retry_login_interval": 600}}}
+        with patch.object(sync, "_interruptible_sleep") as slept:
+            with patch.object(sync, "notify"):
+                keep_going = sync._handle_password_error(  # noqa: SLF001
+                    config, "a@icloud.com", sync.SyncState(),
+                )
+        self.assertTrue(keep_going)
+        slept.assert_called_once_with(600)
+
+    def test_a_successful_web_reauth_raises_the_sync_sentinel(self):
+        """Same sentinel the "Sync now" button uses, so the retry sleep
+        returns within a chunk instead of sitting out the interval."""
+        from unittest.mock import patch
+
+        from src import web
+
+        with patch("src.web.web_signals.request_force_sync") as req:
+            web._wake_sync_loop()  # noqa: SLF001
+        self.assertEqual(
+            sorted(c.args[0] for c in req.call_args_list), ["drive", "photos"],
+        )
+
+    def test_a_failed_nudge_is_not_an_error(self):
+        """Missing the nudge costs a delay, never correctness -- it must not
+        turn a successful re-auth into a 500."""
+        from unittest.mock import patch
+
+        from src import web
+
+        with patch(
+            "src.web.web_signals.request_force_sync",
+            side_effect=OSError("read-only"),
+        ):
+            web._wake_sync_loop()  # noqa: SLF001
+
+
+class TestTheLoopRetriesRatherThanExiting(unittest.TestCase):
+    """A recoverable auth fault must send the loop round again, not end it.
+    Exiting here is what turned a missing keyring entry or a pending second
+    factor into a container that looked healthy and synced nothing."""
+
+    def _run_until_second_wait(self, api_or_error):
+        """Drive sync() so the handler runs once, the loop continues, and the
+        second retry wait ends the test."""
+        from unittest.mock import patch
+
+        from src import sync
+
+        config = {
+            "app": {
+                "credentials": {
+                    "username": "a@icloud.com",
+                    "retry_login_interval": 600,
+                },
+            },
+            "drive": {"destination": "drive"},
+        }
+        kwargs = (
+            {"side_effect": api_or_error}
+            if isinstance(api_or_error, Exception) or callable(api_or_error)
+            else {"return_value": api_or_error}
+        )
+        with (
+            patch.object(sync, "_load_configuration", return_value=config),
+            patch.object(sync, "alive"),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(sync, "_authenticate_and_get_api", **kwargs),
+            patch.object(sync, "notify"),
+            patch.object(
+                sync, "_interruptible_sleep", side_effect=[None, SystemExit],
+            ) as slept,
+            patch("src.config_parser.get_username", return_value="a@icloud.com"),
+        ):
+            with self.assertRaises(SystemExit):
+                sync.sync()
+        return slept
+
+    def test_a_missing_keyring_password_retries(self):
+        from icloudpy import exceptions
+
+        slept = self._run_until_second_wait(
+            exceptions.ICloudPyNoStoredPasswordAvailableException(),
+        )
+        self.assertEqual(slept.call_count, 2)
+
+    def test_a_pending_second_factor_retries(self):
+        from unittest.mock import MagicMock
+
+        api = MagicMock()
+        api.requires_2sa = True
+        api.security_key_challenge = None
+        slept = self._run_until_second_wait(api)
+        self.assertEqual(slept.call_count, 2)
