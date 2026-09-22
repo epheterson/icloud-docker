@@ -1898,3 +1898,62 @@ class TestTheLoopRetriesRatherThanExiting(unittest.TestCase):
         api.security_key_challenge = None
         slept = self._run_until_second_wait(api)
         self.assertEqual(slept.call_count, 2)
+
+
+class TestPermanentlyUnavailableLibrariesAreSetAside(unittest.TestCase):
+    """Apple attaches zones to an account during its own backend migrations
+    and then answers every query about them with an error. Four of those
+    sitting red and permanent trains the eye to skip the state column, which
+    is exactly when a real library failure goes unnoticed."""
+
+    def _entry(self, **kw):
+        base = {"state": "failed", "error": "Index has invalid data (BAD_REQUEST)"}
+        base.update(kw)
+        return base
+
+    def test_a_never_synced_apple_zone_is_set_aside(self):
+        from src.web import _is_permanently_unavailable
+
+        self.assertTrue(_is_permanently_unavailable(self._entry()))
+
+    def test_zone_not_found_counts_too(self):
+        from src.web import _is_permanently_unavailable
+
+        self.assertTrue(
+            _is_permanently_unavailable(self._entry(error="ZONE_NOT_FOUND")),
+        )
+
+    def test_a_library_that_ever_synced_stays_visible(self):
+        """It has files on disk, so its failure is worth seeing."""
+        from src.web import _is_permanently_unavailable
+
+        self.assertFalse(
+            _is_permanently_unavailable(self._entry(completed_at=1790000000.0)),
+        )
+
+    def test_a_failure_for_any_other_reason_stays_visible(self):
+        """Hiding these is the failure mode this guards against."""
+        from src.web import _is_permanently_unavailable
+
+        for err in ("Connection reset by peer", "500 Server Error", "", None):
+            self.assertFalse(_is_permanently_unavailable(self._entry(error=err)))
+
+    def test_a_healthy_or_syncing_library_is_never_set_aside(self):
+        from src.web import _is_permanently_unavailable
+
+        for state in ("ok", "syncing", "interrupted", None):
+            self.assertFalse(_is_permanently_unavailable(self._entry(state=state)))
+
+    def test_the_row_carries_the_flag(self):
+        from unittest.mock import patch
+
+        from src.web import _build_libraries
+
+        states = {
+            "Dead": self._entry(),
+            "Live": {"state": "ok", "completed_at": 1790000000.0},
+        }
+        with patch("src.web_signals.get_library_states", return_value=states):
+            rows = {r["name"]: r for r in _build_libraries({})}
+        self.assertTrue(rows["Dead"]["unavailable"])
+        self.assertFalse(rows["Live"]["unavailable"])

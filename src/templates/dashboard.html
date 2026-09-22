@@ -106,7 +106,8 @@
     </dl>
     {% if service.libraries %}
     <div class="section-label">Libraries</div>
-    {% for lib in service.libraries %}
+    {% set unavailable = service.libraries | selectattr('unavailable') | list %}
+    {% for lib in service.libraries if not lib.unavailable %}
       <div class="lib-entry">
         <div class="lib-row mono">
           <span class="lib-name" title="{{ lib.name }}">{{ lib.name }}</span>
@@ -126,6 +127,27 @@
         {% endif %}
       </div>
     {% endfor %}
+    {# Zones Apple created and never serves. Collapsed rather than deleted:
+       four permanent reds train the eye to skip the state column, which is
+       when a real failure slips past -- but hiding them outright would be
+       its own kind of lying. #}
+    {% if unavailable %}
+    <details class="lib-entry">
+      <summary style="cursor: pointer; font-size: 13px; color: var(--text-tertiary); padding: 3px 0;">
+        {{ unavailable | length }} unavailable (Apple)
+      </summary>
+      {% for lib in unavailable %}
+        <div class="lib-row mono" style="padding-left: 14px;">
+          <span class="lib-name" title="{{ lib.name }}">{{ lib.name }}</span>
+          <span class="lib-state" title="{{ lib.error }}">unavailable</span>
+        </div>
+      {% endfor %}
+      <div class="lib-dest" style="padding-left: 14px;">
+        Apple attaches these during its own backend migrations and then
+        returns an error for every query. Never synced, nothing on disk.
+      </div>
+    </details>
+    {% endif %}
     {% endif %}
 
     {% if service.stats %}
