@@ -1530,18 +1530,6 @@ class TestSigninTransportFailures(unittest.TestCase):
         config = {
             "app": {"credentials": {"username": "a@icloud.com"}},
             "drive": {"destination": "drive"},
-
-
-class TestStaleLibraryStateCleanupIsBestEffort(unittest.TestCase):
-    """Clearing dashboard state is never worth blocking startup over."""
-
-    def test_a_failure_clearing_state_does_not_stop_the_loop(self):
-        from unittest.mock import patch
-
-        from src import sync, web_signals
-
-        config = {
-            "app": {"credentials": {"username": None, "retry_login_interval": -1}},
         }
         with (
             patch.object(sync, "_load_configuration", return_value=config),
@@ -1809,12 +1797,6 @@ class TestUnreadableConfigDoesNotKillTheDaemon(unittest.TestCase):
             patch.object(sync, "_load_configuration", side_effect=configs),
             patch.object(sync, "_log_sync_intervals_at_startup"),
             patch.object(sync, "sleep") as slept,
-
-
-                web_signals,
-                "clear_stale_library_states",
-                side_effect=OSError("read-only fs"),
-            ),
             patch.object(sync, "_interruptible_sleep"),
             patch("src.config_parser.get_username", return_value=None),
         ):
@@ -1851,3 +1833,89 @@ class TestUnreadableConfigDoesNotKillTheDaemon(unittest.TestCase):
         ):
             sync.sync(dry_run=True)
         slept.assert_not_called()
+
+
+class TestStaleLibraryStateCleanupIsBestEffort(unittest.TestCase):
+    """Clearing dashboard state is never worth blocking startup over."""
+
+    def test_a_failure_clearing_state_does_not_stop_the_loop(self):
+        from unittest.mock import patch
+
+        from src import sync, web_signals
+
+        config = {
+            "app": {"credentials": {"username": None, "retry_login_interval": -1}},
+        }
+        with (
+            patch.object(sync, "_load_configuration", return_value=config),
+            patch.object(sync, "alive"),
+            patch.object(sync, "_log_sync_intervals_at_startup"),
+            patch.object(
+                web_signals,
+                "clear_stale_library_states",
+                side_effect=OSError("read-only fs"),
+            ),
+            patch.object(sync, "_interruptible_sleep"),
+            patch("src.config_parser.get_username", return_value=None),
+        ):
+            sync.sync()
+
+
+class TestSecurityKeyAccountsSkipTheCodeFlow(unittest.TestCase):
+    """Once security keys are enrolled Apple stops issuing 6-digit codes, so
+    requesting a push sends nothing and listening for a replied code waits for
+    something that cannot arrive. Both ran every cycle, and Telegram told the
+    user to reply a code that Apple would never send."""
+
+    def test_a_pending_challenge_is_detected_and_recorded(self):
+        from unittest.mock import MagicMock, patch
+
+        from src.sync import _detect_security_key_account
+
+        api = MagicMock()
+        api.security_key_challenge = {"challenge": "abc", "keyHandles": ["k"]}
+        with patch("src.web_signals.record_auth_method") as record:
+            self.assertTrue(_detect_security_key_account(api, "a@b.com"))
+        record.assert_called_once_with(username="a@b.com", method="security_key")
+
+    def test_no_challenge_means_the_ordinary_code_flow(self):
+        from unittest.mock import MagicMock
+
+        from src.sync import _detect_security_key_account
+
+        api = MagicMock()
+        api.security_key_challenge = None
+        self.assertFalse(_detect_security_key_account(api, "a@b.com"))
+
+    def test_icloudpy_without_security_key_support_is_not_an_error(self):
+        from src.sync import _detect_security_key_account
+
+        class Old:
+            """No security_key_challenge attribute at all."""
+
+        self.assertFalse(_detect_security_key_account(Old(), "a@b.com"))
+
+    def test_a_probe_that_raises_does_not_break_the_retry_loop(self):
+        from src.sync import _detect_security_key_account
+
+        class Boom:
+            @property
+            def security_key_challenge(self):
+                msg = "apple said no"
+                raise RuntimeError(msg)
+
+        self.assertFalse(_detect_security_key_account(Boom(), "a@b.com"))
+
+    def test_recording_failure_still_reports_the_security_key(self):
+        """Wording is not worth losing the suppression that matters."""
+        from unittest.mock import MagicMock, patch
+
+        from src.sync import _detect_security_key_account
+
+        api = MagicMock()
+        api.security_key_challenge = {"challenge": "abc", "keyHandles": ["k"]}
+        with patch(
+            "src.web_signals.record_auth_method",
+            side_effect=OSError("read-only fs"),
+        ):
+            self.assertTrue(_detect_security_key_account(api, "a@b.com"))
