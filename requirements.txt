@@ -1,8 +1,10 @@
 # Security-key (FIDO2/WebAuthn) support: once keys are enrolled Apple stops
 # issuing 6-digit codes and answers every 2FA endpoint with an fsaChallenge,
 # which 0.9.0 cannot read -- so src/web.py's /auth/security-key flow has
-# nothing to call. Pinned to our branch until mandarons/icloudpy#174 lands.
-icloudpy @ git+https://github.com/epheterson/icloudpy.git@feat/security-key
+# nothing to call. Pinned to a COMMIT, not the branch name: a push to
+# feat/security-key would otherwise change what a rebuild produces without
+# anything here changing. Drop this line when icloudpy#174 lands upstream.
+icloudpy @ git+https://github.com/epheterson/icloudpy.git@7249a230b778439e6012fcd5058a600cec6daf9e  # feat/security-key
 ruamel.yaml==0.19.1
 python-magic==0.4.27
 # Follows icloudpy's own exact pin. ~=2.32.3 means <2.33, which cannot be
