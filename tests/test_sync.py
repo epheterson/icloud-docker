@@ -1089,6 +1089,32 @@ class TestSync(unittest.TestCase):
         self.assertTrue(sync_state.enable_sync_drive, "Drive sync should be enabled")
         self.assertFalse(sync_state.enable_sync_photos, "Photos sync should be disabled")
 
+    @patch("src.sync.sleep")
+    @patch("src.sync.notify.send", return_value=None)
+    @patch("src.web_signals.record_auth_method")
+    def test_a_security_key_account_skips_the_push_and_the_listener(
+        self, _mock_record, _mock_notify, _mock_sleep,
+    ):
+        """Apple issues no code for such an account, so requesting a push sends
+        nothing and listening for a replied code waits for something that can
+        never arrive. Both must be suppressed, and the log must say why."""
+        sync_state = sync.SyncState()
+        api = Mock()
+        api.security_key_challenge = {"challenge": "abc", "keyHandles": ["k"]}
+
+        with patch("src.sync._wait_for_telegram_code") as wait:
+            with patch(
+                "src.config_parser.get_telegram_listen_enabled", return_value=True,
+            ):
+                with self.assertLogs(level="ERROR") as captured:
+                    self.assertTrue(self._run_2fa_handler(sync_state, api))
+
+        api.trigger_2fa_push_notification.assert_not_called()
+        wait.assert_not_called()
+        self.assertTrue(
+            any("signs in with a security key" in e for e in captured.output),
+        )
+
 
 class TestWebSignalsSyncIntegration(unittest.TestCase):
     """Cover sync.sync() ↔ web_signals integration paths.
