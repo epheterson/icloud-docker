@@ -3035,7 +3035,6 @@ class TestBrokenLibraryDoesNotStopTheOthers(unittest.TestCase):
         self.assertNotIn(tmp, cleaned, "the shared root must never be cleaned per-library")
 
 
-<<<<<<< HEAD
 class TestPhotoDownloadTimeout(unittest.TestCase):
     """A download with no timeout blocks its worker thread forever."""
 
@@ -3069,7 +3068,8 @@ class TestPhotoDownloadTimeout(unittest.TestCase):
             except RuntimeError:
                 pass
         self.assertEqual([t.timeout for t in tasks], [45, 45])
-=======
+
+
 class TestCollisionDoesNotOrphanTheFileItPreserves(unittest.TestCase):
     """The collision branch exists to "preserve both photos". Obsolete-file
     cleanup deletes anything absent from the tracked-file set, so unless the
@@ -3307,4 +3307,3 @@ class TestSelfHealMustNotEatTheStill(unittest.TestCase):
 
             self.assertTrue(still.is_file(), "the still was renamed away")
             self.assertEqual(video.read_text(), "the video", "the video was overwritten")
->>>>>>> origin/feat/photos-filename-format-simple
