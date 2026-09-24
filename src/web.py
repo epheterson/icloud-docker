@@ -885,6 +885,7 @@ def create_app(testing: bool = False) -> Flask:
             )
 
         if not api.requires_2fa:
+            _wake_sync_loop()
             return redirect(url_for("dashboard"))
 
         fsa = api.security_key_challenge
@@ -1053,6 +1054,7 @@ def create_app(testing: bool = False) -> Flask:
                     400,
                 )
             LOGGER.info("Web UI: security-key re-auth succeeded; session trusted.")
+            _wake_sync_loop()
             # The signer clears the clipboard itself once the signature is
             # read, so there is nothing left for the dashboard to do here.
             return redirect(url_for("dashboard"))

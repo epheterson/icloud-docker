@@ -141,10 +141,13 @@
           <span class="lib-name" title="{{ lib.name }}">{{ lib.name }}</span>
           <span class="lib-state" title="{{ lib.error }}">unavailable</span>
         </div>
+        {% if lib.error %}<div class="lib-dest mono" style="padding-left: 28px;">{{ lib.error }}</div>{% endif %}
       {% endfor %}
       <div class="lib-dest" style="padding-left: 14px;">
-        Apple attaches these during its own backend migrations and then
-        returns an error for every query. Never synced, nothing on disk.
+        Apple reports these as unreadable and they have never synced, so
+        there is nothing on disk for them. Usually zones Apple attaches
+        during its own backend migrations — but check the error above if
+        you expected one of these to work.
       </div>
     </details>
     {% endif %}

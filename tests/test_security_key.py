@@ -225,9 +225,11 @@ class TestSecurityKeyGet(unittest.TestCase):
         with (
             patch("icloudpy.utils.get_password_from_keyring", return_value="pw"),
             patch("icloudpy.ICloudPyService", return_value=_api(requires_2fa=False)),
+            patch.object(web, "_wake_sync_loop") as woke,
         ):
             response = _csrf_post(self._client(), "/auth/security-key/start")
         self.assertEqual(response.status_code, 302)
+        woke.assert_called_once_with()
 
     def test_400_when_apple_offers_no_challenge(self):
         """A code-based account landing here should be sent back to the
@@ -438,6 +440,7 @@ class TestSecurityKeyPost(unittest.TestCase):
         with (
             patch.object(web, "_session_authenticates", return_value=True),
             patch("icloudpy.utils.store_password_in_keyring") as keyring,
+            patch.object(web, "_wake_sync_loop") as woke,
         ):
             response = _csrf_post(
                 self._client(),
@@ -449,6 +452,9 @@ class TestSecurityKeyPost(unittest.TestCase):
         # stops retrying on a timer for these accounts.
         keyring.assert_called_once()
         api.confirm_security_key.assert_called_once()
+        # Without the wake the loop sleeps out the rest of its retry interval
+        # and the dashboard keeps saying "sync is stopped" after a success.
+        woke.assert_called_once_with()
 
     def test_success_survives_trust_and_keyring_failures(self):
         """Apple already accepted the assertion; bookkeeping failures after
