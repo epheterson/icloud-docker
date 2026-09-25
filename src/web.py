@@ -763,6 +763,21 @@ def create_app(testing: bool = False) -> Flask:
             with _AUTH_LOCK:
                 _PENDING_AUTH.clear()
 
+    @app.route("/signer.py", methods=["GET"])
+    def signer_source():
+        """Serve the signer for ``uv run <dashboard>/signer.py <blob>``.
+
+        Unauthenticated on purpose: it is the same source the dashboard
+        already embeds in the offline command, it holds no secret, and it can
+        only act on a challenge this container issued.
+        """
+        try:
+            with open(_SIGNER_PATH, encoding="utf-8") as handle:
+                body = handle.read()
+        except OSError:
+            return ("signer missing from this image", 404, {"Content-Type": "text/plain"})
+        return (body, 200, {"Content-Type": "text/x-python; charset=utf-8"})
+
     @app.route("/auth/security-key", methods=["GET"])
     def auth_security_key():
         """Start a security-key (FIDO2/WebAuthn) re-auth ceremony.
@@ -1287,20 +1302,44 @@ def _pack_challenge(fsa: dict[str, Any]) -> str:
 
 
 def _build_signer_command(blob: str) -> str:
-    """One self-contained shell command: copy it, paste it, run it.
+    """The self-contained form: the signer source travels inside the command.
 
-    The signer source is piped to ``uv run`` on stdin rather than written
-    to a file -- nothing is left on the operator's disk, and the machine
-    holding the key needs no network route back to this container. The
-    signature comes back via the clipboard, never printed, so it stays
-    out of scrollback and shell history.
+    Piped to ``uv run`` on stdin, so nothing is left on the operator's disk
+    and the machine holding the key needs no network route back to this
+    container. Always offered, because the short form below cannot reach a
+    dashboard that sits behind proxy authentication.
     """
     try:
         with open(_SIGNER_PATH, encoding="utf-8") as handle:
             source = handle.read()
     except OSError:
         return "src/icloud_sign.py is missing from this image."
-    return f"uv run --quiet --with fido2 - {blob} <<'ICLOUDSIGN'\n{source}ICLOUDSIGN"
+    return f"uv run --quiet - {blob} <<'ICLOUDSIGN'\n{source}ICLOUDSIGN"
+
+
+def _signer_public_url() -> str | None:
+    """The dashboard's public URL, if configured -- where /signer.py lives."""
+    try:
+        config = _load_current_config()
+        return config_parser.get_web_ui_public_url(config) if config else None
+    except Exception:  # noqa: BLE001 - the offline form still works
+        return None
+
+
+def _build_short_signer_command(blob: str, public_url: str | None) -> str | None:
+    """``uv run <dashboard>/signer.py <blob>`` -- one short line.
+
+    Trusts exactly what the self-contained form trusts: that command's source
+    is also emitted by this container, so fetching it from here instead adds
+    no new party, only removes 5 KB of paste. The signer declares its
+    dependency inline (PEP 723), so no ``--with`` is needed. None without a
+    public URL, since the key's machine then has no known address for us.
+    """
+    if not public_url:
+        return None
+    return f"uv run --quiet {public_url.rstrip('/')}/signer.py {blob}"
+
+
 
 
 def _session_authenticates(username: str) -> bool:
@@ -1456,6 +1495,11 @@ def _render_auth(
         csrf_token=_get_csrf_token(),
         security_key_blob=security_key_blob,
         signer_command=_build_signer_command(security_key_blob) if security_key_blob else None,
+        signer_command_short=(
+            _build_short_signer_command(security_key_blob, _signer_public_url())
+            if security_key_blob
+            else None
+        ),
         auth_method=_lookup_auth_method(status_payload),
     )
 

@@ -29,13 +29,23 @@
 <div class="card" style="max-width: 640px;">
   {% if security_key_blob %}
     <p style="margin: 0 0 14px; font-size: 14px; color: var(--text-secondary);">
-      Apple is asking for your <strong>security key</strong>, not a 6-digit code. Your browser cannot sign this (WebAuthn ties the challenge to <span class="mono">apple.com</span>), so run the signer on the machine holding your key.
+      Apple is asking for your <strong>security key</strong>, not a 6-digit code. Your browser cannot sign this (WebAuthn ties the challenge to <span class="mono">apple.com</span>), so run the signer on the machine holding your key. It's the same relay Windows Remote Desktop and Citrix use for security keys: the key stays with you, and only the signature travels back.
     </p>
     <p style="margin: 0 0 6px; font-size: 13px; color: var(--text-secondary); font-weight: 500;">1 — copy, then paste into a terminal on that machine</p>
-    <textarea id="signer-cmd" readonly style="position: absolute; left: -9999px; top: -9999px;">{{ signer_command }}</textarea>
+    <textarea id="signer-cmd" readonly style="position: absolute; left: -9999px; top: -9999px;">{{ signer_command_short or signer_command }}</textarea>
+    {% if signer_command_short %}
+    <code class="mono" style="display: block; font-size: 12px; padding: 8px 10px; margin-bottom: 8px; background: #fafafa; border: 1px solid var(--divider); border-radius: 6px; overflow-wrap: anywhere;">uv run {{ signer_command_short.split('uv run --quiet ', 1)[1].split(' ', 1)[0] }} …</code>
+    {% endif %}
     <button type="button" id="copy-cmd" class="status-cta" style="display: block; width: 100%; padding: 11px 14px; font-size: 14px; border: none; cursor: pointer; margin-left: 0;">
       Copy command
     </button>
+    {% if signer_command_short %}
+    <textarea id="signer-cmd-offline" readonly style="position: absolute; left: -9999px; top: -9999px;">{{ signer_command }}</textarea>
+    <p style="margin: 6px 0 0; font-size: 12px; color: var(--text-tertiary);">
+      Can't reach this dashboard from that machine (proxy login, different network)?
+      <a href="#" id="copy-cmd-offline">Copy the self-contained version</a> instead.
+    </p>
+    {% endif %}
     <p style="margin: 8px 0 0; font-size: 12px; color: var(--text-tertiary);">
       Nothing is saved to disk · signature never shown · clipboard cleared after use
     </p>
@@ -175,24 +185,27 @@
 {% if security_key_blob %}
 <script>
   (function () {
-    var btn = document.getElementById('copy-cmd');
-    var src = document.getElementById('signer-cmd');
-    if (!btn || !src) return;
-    btn.addEventListener('click', function () {
-      var done = function () {
-        btn.textContent = 'Copied — paste into your terminal';
-        setTimeout(function () { btn.textContent = 'Copy command'; }, 4000);
-      };
-      // navigator.clipboard needs a secure context; fall back to the
-      // legacy selection path when served over plain http on a LAN.
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(src.value).then(done, function () {
+    function wire(btn, src, label) {
+      if (!btn || !src) return;
+      btn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        var done = function () {
+          btn.textContent = 'Copied — paste into your terminal';
+          setTimeout(function () { btn.textContent = label; }, 4000);
+        };
+        // navigator.clipboard needs a secure context; fall back to the
+        // legacy selection path when served over plain http on a LAN.
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(src.value).then(done, function () {
+            src.select(); document.execCommand('copy'); done();
+          });
+        } else {
           src.select(); document.execCommand('copy'); done();
-        });
-      } else {
-        src.select(); document.execCommand('copy'); done();
-      }
-    });
+        }
+      });
+    }
+    wire(document.getElementById('copy-cmd'), document.getElementById('signer-cmd'), 'Copy command');
+    wire(document.getElementById('copy-cmd-offline'), document.getElementById('signer-cmd-offline'), 'Copy the self-contained version');
   })();
 </script>
 {% endif %}

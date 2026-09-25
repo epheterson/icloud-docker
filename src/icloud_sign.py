@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["fido2"]
+# ///
 """Sign an Apple security-key challenge locally.
 
 Runs on whichever machine physically holds the key. It never sees your
@@ -10,7 +14,8 @@ party id to be a suffix of the page origin and Apple's is ``apple.com``,
 and browsers blocklist FIDO devices from WebHID/WebUSB precisely to stop a
 page performing raw CTAP against another origin.
 
-Usage:  uv run --with fido2 - <challenge-blob>   (script fed on stdin)
+Usage:  uv run <dashboard>/signer.py <challenge-blob>
+        uv run - <challenge-blob>   (script fed on stdin; offline form)
 """
 
 import base64
@@ -94,7 +99,17 @@ def sign(device, challenge: bytes, handles: list[bytes]) -> dict:
         # key that has no PIN configured.
         user_verification=UserVerificationRequirement("discouraged"),
     )
-    print(f"\n  {device.product_name} — TOUCH IT NOW\n", file=sys.stderr)
+    # Say what is being signed before asking for the touch. A relayed
+    # WebAuthn request can come from somewhere you did not expect, which is
+    # why Windows shows the source on its own redirected prompts; the
+    # defence is knowing what the touch will approve.
+    print(
+        f"\n  Signing an Apple sign-in for {RP_ID} (as {ORIGIN}),\n"
+        f"  relayed from your icloud-docker container.\n"
+        f"  Only touch the key if you just started this from its dashboard.\n\n"
+        f"  {device.product_name} — TOUCH IT NOW\n",
+        file=sys.stderr,
+    )
     result = client.get_assertion(options).get_response(0)
     return {
         "clientData": encode(result.response.client_data),
