@@ -115,32 +115,26 @@ class TestBuildSignerCommand(unittest.TestCase):
 
 
 class TestShortSignerCommand(unittest.TestCase):
-    """``uv run <dashboard>/signer.py <blob>`` in place of a 5 KB paste.
+    """One line pointing at the signer in the public repo, pinned to the
+    commit this image was built from -- in place of a 5 KB paste."""
 
-    It trusts exactly what the self-contained form trusts -- that form's
-    source is also emitted by this container -- so the short form only
-    removes the paste."""
+    SHA = "a" * 40
 
-    def test_one_line_pointing_at_the_dashboard(self):
-        command = web._build_short_signer_command("BLOB", "https://icloud.example.com/")  # noqa: SLF001
-        self.assertEqual(command, "uv run --quiet https://icloud.example.com/signer.py BLOB")
+    def test_one_line_pinned_to_the_build_commit(self):
+        with patch.dict(os.environ, {"PLUS_SOURCE_SHA": self.SHA}):
+            command = web._build_short_signer_command("BLOB")  # noqa: SLF001
+        self.assertEqual(
+            command,
+            f"uv run --quiet https://raw.githubusercontent.com/epheterson/icloud-docker/{self.SHA}/src/icloud_sign.py BLOB",
+        )
         self.assertNotIn("\n", command)
 
-    def test_no_public_url_means_no_short_form(self):
-        """Without a public URL the key's machine has no address for us."""
-        self.assertIsNone(web._build_short_signer_command("BLOB", None))  # noqa: SLF001
-
-    def test_public_url_comes_from_config(self):
-        with patch.object(web, "_load_current_config", return_value={"app": {}}), patch(
-            "src.config_parser.get_web_ui_public_url", return_value="https://x.test",
-        ):
-            self.assertEqual(web._signer_public_url(), "https://x.test")  # noqa: SLF001
-
-    def test_no_config_or_a_bad_one_falls_back_to_the_offline_form(self):
-        with patch.object(web, "_load_current_config", return_value=None):
-            self.assertIsNone(web._signer_public_url())  # noqa: SLF001
-        with patch.object(web, "_load_current_config", side_effect=RuntimeError("bad yaml")):
-            self.assertIsNone(web._signer_public_url())  # noqa: SLF001
+    def test_no_recorded_commit_means_no_short_form(self):
+        """A branch name or junk would make the URL mutable or broken, so
+        only a full SHA is accepted; otherwise the offline form stands alone."""
+        for value in ("", "main", "abc123", "g" * 40):
+            with self.subTest(value=value), patch.dict(os.environ, {"PLUS_SOURCE_SHA": value}):
+                self.assertIsNone(web._build_short_signer_command("BLOB"))  # noqa: SLF001
 
     def test_offline_form_needs_no_separate_dependency_flag(self):
         """The signer declares fido2 inline (PEP 723), so both forms resolve
@@ -148,25 +142,6 @@ class TestShortSignerCommand(unittest.TestCase):
         command = web._build_signer_command("BLOB")  # noqa: SLF001
         self.assertIn("# /// script", command)
         self.assertIn('dependencies = ["fido2"]', command)
-
-
-class TestSignerIsServed(unittest.TestCase):
-    """``GET /signer.py`` -- what the short command fetches."""
-
-    def _client(self):
-        return web.create_app(testing=True).test_client()
-
-    def test_serves_the_signer_source(self):
-        response = self._client().get("/signer.py")
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("text/x-python", response.headers["Content-Type"])
-        self.assertIn(b"CtapHidDevice", response.data)
-        self.assertIn(b"# /// script", response.data)
-
-    def test_missing_signer_is_a_404_not_a_500(self):
-        with patch("builtins.open", side_effect=OSError("not in image")):
-            response = self._client().get("/signer.py")
-        self.assertEqual(response.status_code, 404)
 
 
 class TestAuthMethodHelpers(unittest.TestCase):

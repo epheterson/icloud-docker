@@ -26,11 +26,16 @@ FROM python:3.10-alpine3.22
 
 # set version label
 ARG APP_VERSION=dev
+# The plus/live commit this image was built from. The security-key page
+# points its one-line signer command at that commit on GitHub, so the
+# script the operator runs is exactly the one shipped here, and immutable.
+ARG PLUS_SOURCE_SHA=
 ARG NEW_INSTALLATION_ENDPOINT=dev
 ARG NEW_HEARTBEAT_ENDPOINT=dev
 ENV NEW_INSTALLATION_ENDPOINT=$NEW_INSTALLATION_ENDPOINT
 ENV NEW_HEARTBEAT_ENDPOINT=$NEW_HEARTBEAT_ENDPOINT
 ENV APP_VERSION=$APP_VERSION
+ENV PLUS_SOURCE_SHA=$PLUS_SOURCE_SHA
 LABEL maintainer="mandarons"
 
 # Set environment variables

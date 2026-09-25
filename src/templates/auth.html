@@ -34,7 +34,11 @@
     <p style="margin: 0 0 6px; font-size: 13px; color: var(--text-secondary); font-weight: 500;">1 — copy, then paste into a terminal on that machine</p>
     <textarea id="signer-cmd" readonly style="position: absolute; left: -9999px; top: -9999px;">{{ signer_command_short or signer_command }}</textarea>
     {% if signer_command_short %}
-    <code class="mono" style="display: block; font-size: 12px; padding: 8px 10px; margin-bottom: 8px; background: #fafafa; border: 1px solid var(--divider); border-radius: 6px; overflow-wrap: anywhere;">uv run {{ signer_command_short.split('uv run --quiet ', 1)[1].split(' ', 1)[0] }} …</code>
+    <code class="mono" style="display: block; font-size: 12px; padding: 8px 10px; margin-bottom: 6px; background: #fafafa; border: 1px solid var(--divider); border-radius: 6px; overflow-wrap: anywhere;">uv run …/icloud-docker/{{ signer_source_sha[:7] }}/src/icloud_sign.py &lt;challenge&gt;</code>
+    <p style="margin: 0 0 8px; font-size: 12px; color: var(--text-tertiary);">
+      Runs the signer from this image's exact commit on GitHub —
+      <a href="https://github.com/epheterson/icloud-docker/blob/{{ signer_source_sha }}/src/icloud_sign.py" target="_blank" rel="noopener">read it first</a>.
+    </p>
     {% endif %}
     <button type="button" id="copy-cmd" class="status-cta" style="display: block; width: 100%; padding: 11px 14px; font-size: 14px; border: none; cursor: pointer; margin-left: 0;">
       Copy command
@@ -42,8 +46,8 @@
     {% if signer_command_short %}
     <textarea id="signer-cmd-offline" readonly style="position: absolute; left: -9999px; top: -9999px;">{{ signer_command }}</textarea>
     <p style="margin: 6px 0 0; font-size: 12px; color: var(--text-tertiary);">
-      Can't reach this dashboard from that machine (proxy login, different network)?
-      <a href="#" id="copy-cmd-offline">Copy the self-contained version</a> instead.
+      No internet on that machine?
+      <a href="#" id="copy-cmd-offline">Copy the self-contained version</a> — it carries the signer inline.
     </p>
     {% endif %}
     <p style="margin: 8px 0 0; font-size: 12px; color: var(--text-tertiary);">
