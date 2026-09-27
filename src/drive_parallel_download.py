@@ -70,8 +70,11 @@ def collect_file_for_download(
     with files_lock:
         files.add(local_file)
 
-    # get_drive_flatten_packages already returns False for a None config.
-    flatten_packages = config_parser.get_drive_flatten_packages(config)
+    flatten_packages = (
+        bool(config_parser.get_drive_flatten_packages(config))
+        if config
+        else False
+    )
 
     # Check local existence FIRST to avoid unnecessary network requests.
     # is_package() makes an HTTP call for every file, which is very slow
