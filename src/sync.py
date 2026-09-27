@@ -1027,7 +1027,9 @@ def _handle_2fa_required(config, username: str, sync_state: SyncState, api):
         last_send=sync_state.last_send,
         region=server_region,
         dashboard_url=_resolve_dashboard_url(config),
-        reply_prompt=True,
+        # A security-key account cannot finish sign-in from a Telegram code,
+        # so it gets the standard alert pointing at the dashboard.
+        reply_prompt=not security_key,
     )
     if not security_key and config_parser.get_telegram_listen_enabled(config=config):
         _wait_for_telegram_code(config=config, api=api, timeout_seconds=sleep_for)

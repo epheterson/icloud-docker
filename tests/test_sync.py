@@ -1128,7 +1128,7 @@ class TestSync(unittest.TestCase):
     @patch("src.sync.notify.send", return_value=None)
     @patch("src.web_signals.record_auth_method")
     def test_a_security_key_account_skips_the_push_and_the_listener(
-        self, _mock_record, _mock_notify, _mock_sleep,
+        self, _mock_record, mock_notify, _mock_sleep,
     ):
         """Apple issues no code for such an account, so requesting a push sends
         nothing and listening for a replied code waits for something that can
@@ -1146,6 +1146,8 @@ class TestSync(unittest.TestCase):
 
         api.trigger_2fa_push_notification.assert_not_called()
         wait.assert_not_called()
+        # Nor may Telegram tell it to reply "auth" for a code.
+        self.assertIs(mock_notify.call_args.kwargs["reply_prompt"], False)
         self.assertTrue(
             any("signs in with a security key" in e for e in captured.output),
         )
