@@ -42,6 +42,7 @@ from src import (
     read_config,
     web_signals,
 )
+from src.config_utils import get_config_value_or_none
 
 LOGGER = get_logger()
 
@@ -203,6 +204,19 @@ def _get_library_destinations(config: dict) -> dict[str, str]:
     return config_parser.get_photos_library_destinations(config=config) or {}
 
 
+def _get_configured_libraries(config: dict) -> list[str]:
+    """Libraries the operator named: ``photos.filters.libraries``, then any
+    ``photos.library_destinations`` keys, in config order.
+
+    Read directly rather than through ``get_photos_libraries_filter``, which
+    logs "downloading all libraries" whenever the filter is unset -- once per
+    dashboard load.
+    """
+    named = get_config_value_or_none(config=config, config_path=["photos", "filters", "libraries"]) or []
+    named = [n for n in named if isinstance(n, str)]
+    return list(dict.fromkeys(named + list(_get_library_destinations(config=config))))
+
+
 def _build_service(config: dict, service: str, marker_filename: str) -> dict[str, Any]:
     """Compose a single service entry (Photos or Drive) for /api/status."""
     if service == "photos":
@@ -268,7 +282,11 @@ def _build_service(config: dict, service: str, marker_filename: str) -> dict[str
         "marker_present": os.path.isfile(marker_path),
         "marker_path": marker_path,
         "library_destinations": library_destinations,
-        "libraries": _build_libraries(library_destinations) if service == "photos" else [],
+        "libraries": (
+            _build_libraries(_get_configured_libraries(config=config), library_destinations)
+            if service == "photos"
+            else []
+        ),
         "stats": stats,
         "force_sync_pending": service in web_signals.pending_force_syncs(),
     }
@@ -376,54 +394,26 @@ def _build_status(config: dict | None) -> dict[str, Any]:
     }
 
 
-# Apple's own answer when a zone it created is not readable by anyone. Seen
-# on TestSharedCollection-SilentMigration-* zones, which Apple attaches to an
-# account during its own backend migrations and then never serves.
-_APPLE_UNAVAILABLE_MARKERS = ("BAD_REQUEST", "ZONE_NOT_FOUND")
-
-
-def _is_permanently_unavailable(entry: dict[str, Any]) -> bool:
-    """True for a library that is failing, inert, and not ours to fix.
-
-    Three conditions, all required. It is failing now; it has **never**
-    completed a sync, so there is nothing on disk to lose track of; and
-    Apple's error is one it returns for a zone that cannot be read at all.
-
-    The point is to keep the word "Failed" meaningful. Four permanent
-    Apple-side zones sitting red forever trains the eye to skip that
-    column, which is exactly when a real library failure goes unnoticed.
-    A library that has ever synced stays visible however it fails, and so
-    does one failing for any other reason -- those are the ones worth
-    looking at.
-
-    Deliberately decided from recorded state rather than a filesystem
-    probe: the dashboard renders this on every load, and "has it ever
-    completed" already answers "is there anything there" without adding
-    a stat per library to the page path.
-    """
-    if entry.get("state") != "failed" or entry.get("completed_at"):
-        return False
-    error = str(entry.get("error") or "")
-    return any(marker in error for marker in _APPLE_UNAVAILABLE_MARKERS)
-
-
-def _build_libraries(library_destinations: dict[str, str]) -> list[dict[str, Any]]:
+def _build_libraries(configured: list[str], library_destinations: dict[str, str]) -> list[dict[str, Any]]:
     """One row per photo library: where it goes and how it last went.
 
-    Destinations and sync state were rendered as two separate lists of the
-    same libraries, which read as unrelated and pushed a long zone name into
-    a two-column row that wrapped badly. Merging them means a library is
-    named once.
+    Only libraries this container actually syncs are listed: the ones the
+    operator named in config, plus any that have completed a sync or are
+    syncing right now. An account can carry libraries that never serve
+    anything -- there is nothing to do with them, so they are left out
+    rather than shown as a permanent failure. The log still records every
+    attempt, and naming a library in config always lists it.
 
-    Configured libraries come first and in config order; anything Apple
-    exposes that has no mapping is appended, so a library syncing into the
-    default destination is still visible.
+    Configured libraries come first, in config order.
     """
     states = web_signals.get_library_states()
     rows = []
-    for name in list(library_destinations) + [
-        n for n in sorted(states) if n not in library_destinations
-    ]:
+    active = sorted(
+        n
+        for n, entry in states.items()
+        if n not in configured and (entry.get("completed_at") or entry.get("state") == "syncing")
+    )
+    for name in configured + active:
         entry = states.get(name, {})
         completed_at = entry.get("completed_at")
         rows.append(
@@ -435,7 +425,6 @@ def _build_libraries(library_destinations: dict[str, str]) -> list[dict[str, Any
                 "completed_relative": (
                     web_signals.format_relative_time(completed_at) if completed_at else None
                 ),
-                "unavailable": _is_permanently_unavailable(entry),
             },
         )
     return rows
