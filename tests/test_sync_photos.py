@@ -3082,41 +3082,6 @@ class TestBrokenLibraryDoesNotStopTheOthers(unittest.TestCase):
             sync_photos._signal_library("record_library_started", "PrimarySync")  # noqa: SLF001
 
 
-class TestPhotoDownloadTimeout(unittest.TestCase):
-    """A download with no timeout blocks its worker thread forever."""
-
-    def test_the_timeout_reaches_the_download_call(self):
-        from unittest.mock import MagicMock, patch
-
-        from src.photo_file_utils import download_photo_from_server
-
-        photo = MagicMock()
-        photo.download.return_value.raw = StringIO("")
-        with tempfile.TemporaryDirectory() as d:
-            with patch("shutil.copyfileobj"):
-                download_photo_from_server(
-                    photo, "original", os.path.join(d, "x.jpg"), timeout=77,
-                )
-        self.assertEqual(photo.download.call_args.kwargs["timeout"], 77)
-
-    def test_the_configured_timeout_reaches_every_task(self):
-        from src import photo_download_manager as m
-
-        tasks = [
-            m.DownloadTaskInfo(photo=object(), file_size="original", photo_path="/a"),
-            m.DownloadTaskInfo(photo=object(), file_size="original", photo_path="/b"),
-        ]
-        cfg = {"photos": {"request_timeout": 45}, "app": {}}
-        from unittest.mock import patch
-
-        with patch.object(m, "ThreadPoolExecutor", side_effect=RuntimeError("stop")):
-            try:
-                m.execute_parallel_downloads(tasks, cfg)
-            except RuntimeError:
-                pass
-        self.assertEqual([t.timeout for t in tasks], [45, 45])
-
-
 class TestCollisionDoesNotOrphanTheFileItPreserves(unittest.TestCase):
     """The collision branch exists to "preserve both photos". Obsolete-file
     cleanup deletes anything absent from the tracked-file set, so unless the
@@ -3354,6 +3319,41 @@ class TestSelfHealMustNotEatTheStill(unittest.TestCase):
 
             self.assertTrue(still.is_file(), "the still was renamed away")
             self.assertEqual(video.read_text(), "the video", "the video was overwritten")
+
+
+class TestPhotoDownloadTimeout(unittest.TestCase):
+    """A download with no timeout blocks its worker thread forever."""
+
+    def test_the_timeout_reaches_the_download_call(self):
+        from unittest.mock import MagicMock, patch
+
+        from src.photo_file_utils import download_photo_from_server
+
+        photo = MagicMock()
+        photo.download.return_value.raw = StringIO("")
+        with tempfile.TemporaryDirectory() as d:
+            with patch("shutil.copyfileobj"):
+                download_photo_from_server(
+                    photo, "original", os.path.join(d, "x.jpg"), timeout=77,
+                )
+        self.assertEqual(photo.download.call_args.kwargs["timeout"], 77)
+
+    def test_the_configured_timeout_reaches_every_task(self):
+        from src import photo_download_manager as m
+
+        tasks = [
+            m.DownloadTaskInfo(photo=object(), file_size="original", photo_path="/a"),
+            m.DownloadTaskInfo(photo=object(), file_size="original", photo_path="/b"),
+        ]
+        cfg = {"photos": {"request_timeout": 45}, "app": {}}
+        from unittest.mock import patch
+
+        with patch.object(m, "ThreadPoolExecutor", side_effect=RuntimeError("stop")):
+            try:
+                m.execute_parallel_downloads(tasks, cfg)
+            except RuntimeError:
+                pass
+        self.assertEqual([t.timeout for t in tasks], [45, 45])
 
 
 class TestDownloadIsVerifiedBeforeItCountsAsThePhoto(unittest.TestCase):
