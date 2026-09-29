@@ -1,10 +1,8 @@
-# Security-key (FIDO2/WebAuthn) support (icloudpy#174) and the Drive by_id
-# lookup honouring the request timeout (icloudpy#186) are merged upstream but
-# not released (PyPI latest is 0.9.0, which cannot read Apple's fsaChallenge).
-# Pinned to mandarons/icloudpy main at #186's merge -- the official repo, by
-# SHA so a rebuild cannot drift. Replace with the release version
-# (icloudpy==0.10.0 or whatever ships) once it is published.
-icloudpy @ git+https://github.com/mandarons/icloudpy.git@2c2b2d6db05b24a8a897db022883dae34ab2cefb
+# Security-key (FIDO2/WebAuthn) sign-in needs icloudpy 0.10.0 (#174). The
+# container never talks to a key itself -- it relays the challenge to the
+# signer on the machine holding the key -- so the ``security-key`` extra
+# (fido2) is not installed here.
+icloudpy==0.10.0
 ruamel.yaml==0.19.1
 python-magic==0.4.27
 # Follows icloudpy's own exact pin. ~=2.32.3 means <2.33, which cannot be
