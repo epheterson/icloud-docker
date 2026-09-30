@@ -115,8 +115,8 @@ class TestBuildSignerCommand(unittest.TestCase):
 
 
 class TestShortSignerCommand(unittest.TestCase):
-    """One line pointing at the signer in the public repo, pinned to the
-    commit this image was built from -- in place of a 5 KB paste."""
+    """plus: one line pointing at the signer on epheterson/icloud-docker,
+    pinned to the plus/live commit this image was built from."""
 
     SHA = "a" * 40
 
@@ -681,15 +681,15 @@ class TestCeremonyCookieIsolation(unittest.TestCase):
         target = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, source, True)
         self.addCleanup(shutil.rmtree, target, True)
-        with open(os.path.join(target, "ephetersonmecom"), "w") as fh:
+        with open(os.path.join(target, "userexamplecom"), "w") as fh:
             fh.write("old")
-        with open(os.path.join(source, "ephetersonmecom"), "w") as fh:
+        with open(os.path.join(source, "userexamplecom"), "w") as fh:
             fh.write("new")
         with patch.object(web, "DEFAULT_COOKIE_DIRECTORY", target):
             web._publish_ceremony_session(source)  # noqa: SLF001
-        with open(os.path.join(target, "ephetersonmecom")) as fh:
+        with open(os.path.join(target, "userexamplecom")) as fh:
             self.assertEqual(fh.read(), "new")
-        with open(os.path.join(target, "ephetersonmecom.bak")) as fh:
+        with open(os.path.join(target, "userexamplecom.bak")) as fh:
             self.assertEqual(fh.read(), "old")
 
     def test_publish_never_raises(self):

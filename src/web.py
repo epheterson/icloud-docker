@@ -1315,25 +1315,36 @@ def _build_signer_command(blob: str) -> str:
     return f"uv run --quiet - {blob} <<'ICLOUDSIGN'\n{source}ICLOUDSIGN"
 
 
+# plus: the image is built from epheterson/icloud-docker's plus/live, whose
+# version numbers are not mandarons release tags, so the signer is pinned to
+# the exact commit instead (PLUS_SOURCE_SHA, passed by the plus build).
 _SIGNER_REPO_RAW = "https://raw.githubusercontent.com/epheterson/icloud-docker"
 
 
-def _build_short_signer_command(blob: str) -> str | None:
-    """``uv run <signer at this image's commit> <blob>`` -- one line.
-
-    Fetched from the public repo at the exact commit this image was built
-    from: reachable from any machine (a dashboard behind an auth proxy, as
-    one accepting an Apple ID password should be, cannot be fetched by uv),
-    readable before running, and immutable by SHA. The signer declares its
-    fido2 dependency inline (PEP 723), so no ``--with`` is needed.
-
-    None when the build did not record its commit; the self-contained form
-    is then the only one offered.
-    """
+def _signer_source_ref() -> str | None:
+    """The plus/live commit this image was built from, or None if unrecorded."""
     sha = os.environ.get("PLUS_SOURCE_SHA", "").strip()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         return None
-    return f"uv run --quiet {_SIGNER_REPO_RAW}/{sha}/src/icloud_sign.py {blob}"
+    return sha
+
+
+def _build_short_signer_command(blob: str) -> str | None:
+    """``uv run <signer at this release's tag> <blob>`` -- one line.
+
+    Fetched from the public repo at the tag this image was built from:
+    reachable from any machine (a dashboard behind an auth proxy, as one
+    accepting an Apple ID password should be, cannot be fetched by uv), and
+    readable before running. The signer declares its fido2 dependency inline
+    (PEP 723), so no ``--with`` is needed.
+
+    None for a build that is not a release; the self-contained form is then
+    the only one offered.
+    """
+    ref = _signer_source_ref()
+    if ref is None:
+        return None
+    return f"uv run --quiet {_SIGNER_REPO_RAW}/{ref}/src/icloud_sign.py {blob}"
 
 
 def _session_authenticates(username: str) -> bool:
@@ -1457,7 +1468,7 @@ def _render_auth(
         csrf_token=_get_csrf_token(),
         security_key_blob=security_key_blob,
         signer_command=_build_signer_command(security_key_blob) if security_key_blob else None,
-        signer_source_sha=os.environ.get("PLUS_SOURCE_SHA", "").strip(),
+        signer_source_ref=_signer_source_ref(),
         signer_command_short=(
             _build_short_signer_command(security_key_blob)
             if security_key_blob
