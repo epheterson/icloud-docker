@@ -1,4 +1,4 @@
-icloudpy==0.10.0
+icloudpy @ git+https://github.com/epheterson/icloudpy@89b26afb8bf972a92d76588147ae089a9a3f7366
 ruamel.yaml==0.19.1
 python-magic==0.4.27
 requests~=2.34.2
