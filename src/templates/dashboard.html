@@ -17,9 +17,17 @@
       </span>
     {% else %}
       <br><span class="mono" style="font-size: 12px; color: var(--text-tertiary);">
-        Your Apple ID password is stored in the container's keyring{% if status.password_from_env %} (from ENV_ICLOUD_PASSWORD){% endif %} — a plain-text file on most hosts.
-        <a href="https://github.com/mandarons/icloud-docker#two-ways-to-run-unattended" target="_blank" rel="noopener">Running without it</a>
+        {% if status.stored_password_outdated %}Stored password looks out of date{% else %}Password stored in plain text{% if status.password_from_env %} (from ENV_ICLOUD_PASSWORD){% endif %}{% endif %}
       </span>
+      {% if not status.password_from_env %}
+      <form action="/auth/forget-password" method="post" style="margin-top: 6px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="status-cta secondary"
+                title="Sync keeps running from the saved session.">
+          Remove stored password
+        </button>
+      </form>
+      {% endif %}
     {% endif %}
     {% if status.trust_days_remaining is not none %}
       <br><span class="mono" style="font-size: 12px; color: var(--text-tertiary);">
