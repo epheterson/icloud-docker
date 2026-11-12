@@ -337,3 +337,19 @@ class TestLogSummary(unittest.TestCase):
         self.assertEqual(summary["text"], "2 errors and 2 warnings recently")
         self.assertEqual(summary["last"], err)
         self.assertEqual(view.log_summary([err])["text"], "1 error recently")
+
+    def test_log_summary_says_what_the_errors_are_about(self):
+        def line(level, logger, message):
+            return f"2026-11-11 22:57:03,830 :: {level} :: {logger} :: x.py :: 89 :: {message}"
+
+        lines = [
+            line("ERROR", "icloudpy.base", "ObjectNotFoundException: Could not find document (NOT_FOUND)"),
+            line("ERROR", "root", "File not found in iCloud Drive - /icloud/drive/A/one.mp4: ObjectNotFoundException"),
+            line("ERROR", "root", "[alex] File not found in iCloud Drive - /icloud/drive/A/two.mp4: x"),
+            line("ERROR", "root", "[alex] Refusing to remove 55905 of 61026 files (92%) under /icloud/photos/A"),
+        ]
+        summary = view.log_summary(lines)
+        self.assertEqual(summary["errors"], 4)
+        self.assertEqual(summary["top"], "Mostly: File not found in iCloud Drive (2)")
+        self.assertEqual(view.log_summary(lines[3:])["top"], "Refusing to remove N of N files (1)")
+        self.assertIsNone(view.log_summary(lines[:1])["top"])

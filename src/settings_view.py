@@ -454,7 +454,12 @@ def build_rows(config: dict | None) -> list[dict[str, Any]]:
             "label": "Alerts",
             "kind": "text",
             "editable": False,
-            "note": "",
+            "note": "Set up in config.yaml: "
+            + ", ".join(
+                f"{name} under {key.rsplit('.', 1)[0]}{' (on)' if name in channels else ''}"
+                for key, name in _ALERT_CHANNELS
+            )
+            + ".",
             "source": "config.yaml" if channels else "default",
             "value": None,
             "display": ", ".join(channels) or "None set",

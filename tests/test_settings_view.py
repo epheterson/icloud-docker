@@ -127,6 +127,8 @@ class TestRows(unittest.TestCase):
         alerts = self._rows({"app": {"telegram": {"bot_token": "x"}, "smtp": {"email": "  "}, "discord": None}})[""]
         self.assertEqual((alerts["label"], alerts["display"]), ("Alerts", "Telegram"))
         self.assertEqual(self._rows({})[""]["display"], "None set")
+        self.assertIn("Telegram under app.telegram (on)", alerts["note"])
+        self.assertIn("Email under app.smtp,", alerts["note"])
 
     def test_a_few_rows_are_up_front(self):
         rows = settings_view.build_rows({})

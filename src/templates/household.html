@@ -4,7 +4,7 @@
 <h1 class="page-title">{{ account.label }}</h1>
 <p class="page-sub">{{ account.username or "No Apple ID yet" }} · {% if session_saved %}signed in{% else %}not signed in{% endif %}</p>
 
-<p style="font-size: 14px; color: var(--text-secondary); margin: 0 0 16px; max-width: 640px;">Photos{% if backup.drive.on %} and iCloud Drive{% endif %}. {% if shared_folder %}<span title="In {{ shared_folder }}, so it isn't copied twice.">Shared Library is in the main backup.</span>{% else %}Shared Library isn't backed up.{% endif %}</p>
+<p style="font-size: 14px; color: var(--text-secondary); margin: 0 0 16px;">Photos{% if backup.drive.on %} and iCloud Drive{% endif %}. {% if shared_folder %}<span title="In {{ shared_folder }}, so it isn't copied twice.">Shared Library is in the main backup.</span>{% else %}Shared Library isn't backed up.{% endif %}</p>
 
 {% if backup.drive.available %}
 <form action="/household/{{ account.id }}/drive" method="post" class="card" style="max-width: 640px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; padding: 16px 20px;">

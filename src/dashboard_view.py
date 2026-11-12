@@ -283,10 +283,28 @@ def headline(everyone: list[dict]) -> dict[str, str]:
     return {"tone": waiting["tone"], "title": _plainly(waiting)}
 
 
+def _problem(line: str) -> str | None:
+    """What an app log line is about, without the file, id or numbers.
+
+    ``[alex] File not found in iCloud Drive - /icloud/drive/...`` becomes
+    ``File not found in iCloud Drive``. Library lines (``icloudpy.*``) give
+    None: the app logs the same failure in its own words.
+    """
+    parts = line.split(" :: ", 5)
+    if len(parts) < 6 or parts[2].strip() != "root":
+        return None
+    message = re.sub(r"^\[[^\]]*\]\s*", "", parts[5].strip())
+    message = re.split(r" - |: | /|\(", message, maxsplit=1)[0]
+    message = re.sub(r"\d[\d,.]*", "N", message).strip(" .")
+    return message[:70] or None
+
+
 def log_summary(lines: list[str]) -> dict[str, Any]:
-    """Warnings and errors in the log tail, and the most recent one."""
+    """Warnings and errors in the log tail, the most recent one, and what
+    most of them are about (``top``), so a count never stands alone."""
     warnings = errors = 0
     last = None
+    seen: dict[str, int] = {}
     for line in lines or []:
         match = _LEVEL.search(line)
         if not match:
@@ -296,6 +314,9 @@ def log_summary(lines: list[str]) -> dict[str, Any]:
         else:
             errors += 1
         last = line
+        problem = _problem(line)
+        if problem:
+            seen[problem] = seen.get(problem, 0) + 1
     if errors or warnings:
         parts = []
         if errors:
@@ -305,4 +326,8 @@ def log_summary(lines: list[str]) -> dict[str, Any]:
         text = " and ".join(parts) + " recently"
     else:
         text = "Nothing unusual recently"
-    return {"warnings": warnings, "errors": errors, "text": text, "last": last}
+    top = None
+    if seen:
+        problem, count = max(seen.items(), key=lambda item: item[1])
+        top = f"Mostly: {problem} ({count})" if len(seen) > 1 else f"{problem} ({count})"
+    return {"warnings": warnings, "errors": errors, "text": text, "last": last, "top": top}

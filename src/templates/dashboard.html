@@ -14,7 +14,6 @@
   .hero { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; margin: 8px 0 24px; overflow-wrap: anywhere; }
 
   /* A reading width: the status sits beside its name, not a screen away. */
-  .hero, .people, .add, .log { max-width: 680px; }
   .people { display: grid; gap: 16px; margin-bottom: 16px; }
   .person { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 20px 22px; min-width: 0; }
   .person-head { display: flex; align-items: center; gap: 0 14px; flex-wrap: wrap; }
@@ -75,7 +74,8 @@
 
 
   .log { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 22px; }
-  .log > summary { display: flex !important; width: 100%; gap: 12px; }
+  .log > summary { display: flex !important; flex-wrap: wrap; width: 100%; gap: 4px 12px; }
+  .log-top { flex-basis: 100%; font-size: 13px; color: var(--text-tertiary); overflow-wrap: anywhere; }
   .log-count { margin-left: auto; }
   .log-title { color: var(--text); font-weight: 600; font-size: 15px; }
   .log-count { color: var(--text-tertiary); }
@@ -193,8 +193,8 @@
 {% endfor %}
 </div>
 
-<details class="log quiet"{% if log_summary.errors %} open{% endif %}>
-  <summary><span class="log-title">Log</span><span class="log-count{% if log_summary.errors %} has-err{% endif %}">{{ log_summary.text }}</span></summary>
+<details class="log quiet">
+  <summary><span class="log-title">Log</span><span class="log-count{% if log_summary.errors %} has-err{% endif %}">{{ log_summary.text }}</span>{% if log_summary.top %}<span class="log-top">{{ log_summary.top }}</span>{% endif %}</summary>
   <div class="log-head"><h2>Recent log</h2><a href="/api/logs" class="mono" style="font-size: 12px;">/api/logs</a></div>
   {% if log_lines %}
     <pre class="logs">{% for line in log_lines %}{{ line }}
