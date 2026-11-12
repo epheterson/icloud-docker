@@ -511,11 +511,18 @@ class TestDashboard(_ConfigDir):
             self.assertNotIn('action="/household/member/apple-id"', html)
             self.assertIn(MEMBER, html)
 
-    def test_dashboard_shows_add_form_and_errors(self):
+    def test_accounts_page_shows_add_form_and_errors(self):
         with patch.object(web, "_build_service", return_value={}):
-            html = self.client.get("/?household_error=Nope").get_data(as_text=True)
+            html = self.client.get("/auth?household_error=Nope").get_data(as_text=True)
+            dashboard = self.client.get("/").get_data(as_text=True)
         self.assertIn('action="/household/add"', html)
         self.assertIn("Nope", html)
+        self.assertNotIn('action="/household/add"', dashboard)
+
+    def test_a_members_whole_row_opens_their_page(self):
+        with patch.object(web, "_build_service", return_value={}):
+            html = self.client.get("/").get_data(as_text=True)
+        self.assertIn('class="row-link" href="/household/member"', html)
 
 
 class TestAddPerson(_ConfigDir):
@@ -544,12 +551,12 @@ class TestAddPerson(_ConfigDir):
         _csrf_post(self.client, "/household/add", {"id": "sam"})
         self.assertIn("- id: sam", self._text())
 
-    def test_refusals_come_back_to_the_dashboard(self):
+    def test_refusals_come_back_to_the_accounts_page(self):
         _csrf_post(self.client, "/household/add", {"id": "alex"})
         for bad in ("alex", "Bad Name", ""):
             with self.subTest(bad=bad):
                 response = _csrf_post(self.client, "/household/add", {"id": bad})
-                self.assertIn("household_error=", response.headers["Location"])
+                self.assertIn("/auth?household_error=", response.headers["Location"])
 
     def test_accounts_must_be_a_list(self):
         with open(self.path, "a", encoding="utf-8") as f:

@@ -740,7 +740,6 @@ def create_app(testing: bool = False) -> Flask:
             active_nav="dashboard",
             version=os.environ.get("APP_VERSION", ""),
             csrf_token=_get_csrf_token(),
-            household_error=request.args.get("household_error"),
         )
 
     @app.route("/api/health")
@@ -1666,7 +1665,7 @@ def create_app(testing: bool = False) -> Flask:
         try:
             settings_view.add_account(_current_config_path(), account_id)
         except settings_view.SettingError as e:
-            return redirect(url_for("dashboard", household_error=str(e)))
+            return redirect(url_for("auth_form", household_error=str(e)))
         LOGGER.info(f"Web UI: added household account {account_id}")
         return redirect(url_for("household_member", account_id=account_id))
 
@@ -2006,6 +2005,7 @@ def _render_auth(
         version=os.environ.get("APP_VERSION", ""),
         csrf_token=_get_csrf_token(),
         security_key_blob=security_key_blob,
+        household_error=request.args.get("household_error"),
         signer_command=_build_signer_command(security_key_blob) if security_key_blob else None,
         signer_source_ref=_signer_source_ref(),
         signer_command_short=(
